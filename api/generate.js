@@ -212,14 +212,27 @@ Return JSON with this exact shape:
   "hooks": ["5 hook options under 13 words each"],
   "voiceover": "A 15-30 second voiceover script. Factual, fast, slightly dramatic.",
   "scenes": [
-    {"time":"0-3s", "visual":"visual direction", "caption":"on-screen caption", "voiceover":"line for this scene", "source_fact":"specific loaded-wiki fact used"}
+    {
+      "time":"0-3s",
+      "visual_type":"title|network|timeline|metric|comparison|process|person|event|end",
+      "visual":"specific visual direction",
+      "visual_data":{"primary":"main label","secondary":"context","value":"number if relevant","date":"date if relevant","items":[{"label":"short label","detail":"article fact"}]},
+      "caption":"maximum 5 words",
+      "voiceover":"line for this scene",
+      "source_fact":"specific loaded-wiki fact used"
+    }
   ],
-  "suggested_visuals": ["logos, wiki screenshots, charts, timelines, source screenshots, but no fabricated imagery"],
+  "suggested_visuals": ["article-derived entity maps, timelines, metrics, process diagrams, and the IQ.wiki source page"],
   "tiktok_caption": "caption with CTA",
   "x_caption": "caption with CTA",
   "cta": "short CTA back to IQ.wiki",
   "fact_check": ["specific facts from the script that need editor/source verification"]
-}`;
+}
+Visual rules:
+- Every scene must directly visualize its source_fact.
+- Dates become timelines or events; numbers become metrics or comparisons; named entities and relationships become networks or person scenes; mechanisms and sequences become process diagrams.
+- Do not use generic stock imagery, decorative/random graphics, or transcript-like text screens.
+- Narration explains detail. The canvas uses diagrams, dates, values, names, and at most five caption words.`;
   }
 
   if (action === 'funding_timeline') {
@@ -324,25 +337,54 @@ function buildLocalAbilityResult(action, wiki, reason) {
 function buildLocalShort(wiki) {
   const facts = sentenceFacts(wiki.rawText);
   const title = wiki.title || 'this wiki';
-  const sceneRows = [
-    ['0-4s', `${title} title card`, `What is ${title}?`, facts[0] || wiki.summary],
-    ['4-9s', 'Show the core project or person from the wiki', 'The basic idea', facts[1] || wiki.summary],
-    ['9-15s', 'Use a simple timeline or callout cards', 'Why it matters', facts[2] || facts[0] || wiki.summary],
-    ['15-22s', 'Show a key date, event, or market context', 'The turning point', facts[3] || facts[1] || wiki.summary],
-    ['22-27s', 'End on the IQ.wiki page and source list', 'Read the full wiki', facts[4] || facts[2] || wiki.summary]
-  ];
-  const scenes = sceneRows.map(([time, visual, caption, fact]) => ({
-    time,
-    visual,
-    caption,
-    voiceover: shorten(fact, 150),
-    source_fact: shorten(fact, 180)
+  const dates = extractDates(wiki.rawText).slice(0, 3);
+  const money = extractMoney(wiki.rawText).slice(0, 2);
+  const names = extractNamedPhrases(wiki.rawText)
+    .filter((name) => name.toLowerCase() !== title.toLowerCase())
+    .slice(0, 4);
+  const fact = (index) => facts[index] || facts[0] || wiki.summary;
+  const itemize = (values, offset = 0) => values.map((value, index) => ({
+    label: shorten(value, 24),
+    detail: shorten(facts[index + offset] || value, 80)
   }));
+  const scenes = [
+    {
+      time: '0-4s', visual_type: 'title', visual: `Introduce ${title} using its article identity`,
+      visual_data: { primary: title, secondary: shorten(fact(0), 70), items: [] },
+      caption: `What is ${shorten(title, 30)}?`, voiceover: shorten(fact(0), 150), source_fact: shorten(fact(0), 180)
+    },
+    {
+      time: '4-10s', visual_type: names.length ? 'network' : 'process',
+      visual: names.length ? `Map named entities connected to ${title}` : 'Diagram the article’s core idea',
+      visual_data: { primary: title, secondary: shorten(fact(1), 70), items: itemize(names.length ? names : facts.slice(1, 4), 1) },
+      caption: names.length ? 'The key connections' : 'How it works',
+      voiceover: shorten(fact(1), 150), source_fact: shorten(fact(1), 180)
+    },
+    {
+      time: '10-16s', visual_type: dates.length ? 'timeline' : 'process',
+      visual: dates.length ? 'Place article events on a dated timeline' : 'Show the next article-backed step',
+      visual_data: { primary: dates[0] || title, secondary: shorten(fact(2), 70), date: dates[0] || '', items: itemize(dates.length ? dates : facts.slice(2, 5), 2) },
+      caption: dates.length ? 'The timeline' : 'What changed',
+      voiceover: shorten(fact(2), 150), source_fact: shorten(fact(2), 180)
+    },
+    {
+      time: '16-22s', visual_type: money.length ? 'metric' : 'event',
+      visual: money.length ? 'Emphasize the article’s key value with context' : 'Visualize the article’s key event',
+      visual_data: { primary: title, secondary: shorten(fact(3), 70), value: money[0] || '', items: itemize(money, 3) },
+      caption: money.length ? 'The key number' : 'Why it matters',
+      voiceover: shorten(fact(3), 150), source_fact: shorten(fact(3), 180)
+    },
+    {
+      time: '22-28s', visual_type: 'end', visual: `Return to the ${title} IQ.wiki article`,
+      visual_data: { primary: title, secondary: 'Read the sourced article on IQ.wiki', items: [] },
+      caption: 'Explore the full wiki', voiceover: shorten(fact(4), 150), source_fact: shorten(fact(4), 180)
+    }
+  ];
   return {
     hooks: [`What most people miss about ${title}`, `${title}, explained in under 30 seconds`, `The fast version of ${title}`],
     voiceover: scenes.map(scene => scene.voiceover).join(' '),
     scenes,
-    suggested_visuals: ['IQ.wiki article screenshot', 'Simple timeline cards', 'Source and key-fact callouts'],
+    suggested_visuals: ['Article-derived entity map', 'Article-derived timeline or metric', 'IQ.wiki source end card'],
     tiktok_caption: `${title}, explained in under 30 seconds. Read the full wiki on IQ.wiki.`,
     x_caption: `A fast visual guide to ${title}. Read the full source on IQ.wiki.`,
     cta: 'Read the full wiki on IQ.wiki.',

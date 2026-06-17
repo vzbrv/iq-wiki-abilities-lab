@@ -382,32 +382,46 @@ function startShortPlayback(withNarration = false) {
 
   const draw = (now) => {
     const elapsed = Math.min((now - started) / 1000, duration);
-    const sceneIndex = Math.min(scenes.length - 1, Math.floor((elapsed / duration) * scenes.length));
-    drawShortFrame(context, canvas, scenes[sceneIndex], elapsed, duration);
+    const scene = scenes.find(item => {
+      const [start, end] = getSceneWindow(item.time);
+      return elapsed >= start && elapsed < end;
+    }) || scenes.at(-1);
+    drawShortFrame(context, canvas, scene, elapsed, duration);
     if (elapsed < duration) shortPlayback.frame = requestAnimationFrame(draw);
   };
   shortPlayback.frame = requestAnimationFrame(draw);
 }
 
+function getSceneWindow(value) {
+  const times = String(value || '').match(/\d+(?:\.\d+)?/g)?.map(Number) || [];
+  return [times[0] || 0, times[1] || times[0] + 5];
+}
+
 function drawShortFrame(context, canvas, scene, elapsed, duration) {
   const progress = elapsed / duration;
-  const hue = 278 + Math.round(progress * 42);
-  const gradient = context.createLinearGradient(0, 0, canvas.width, canvas.height);
-  gradient.addColorStop(0, `hsl(${hue} 72% 24%)`);
-  gradient.addColorStop(1, `hsl(${hue + 55} 70% 12%)`);
-  context.fillStyle = gradient;
+  context.fillStyle = '#120f16';
   context.fillRect(0, 0, canvas.width, canvas.height);
 
-  context.fillStyle = 'rgba(255,255,255,.1)';
-  context.fillRect(24, 72, canvas.width - 48, 330);
+  context.strokeStyle = 'rgba(255,255,255,.055)';
+  context.lineWidth = 1;
+  for (let x = 0; x <= canvas.width; x += 40) {
+    context.beginPath(); context.moveTo(x, 0); context.lineTo(x, canvas.height); context.stroke();
+  }
+  for (let y = 0; y <= canvas.height; y += 40) {
+    context.beginPath(); context.moveTo(0, y); context.lineTo(canvas.width, y); context.stroke();
+  }
+
   context.fillStyle = '#35e7bb';
   context.font = '700 18px system-ui';
   context.fillText('IQ.wiki', 24, 42);
+
+  drawTopicVisual(context, scene, elapsed);
+
   context.fillStyle = '#ffffff';
-  context.font = '700 28px system-ui';
-  wrapCanvasText(context, scene.visual || state.wiki?.title || 'Wiki explainer', 42, 135, 276, 36);
-  context.font = '600 22px system-ui';
-  wrapCanvasText(context, scene.caption || scene.voiceover || '', 42, 440, 276, 30);
+  context.font = '700 20px system-ui';
+  context.textAlign = 'center';
+  wrapCanvasText(context, shortWords(scene.caption || scene.visual, 5), 180, 545, 300, 26, 2, 'center');
+  context.textAlign = 'left';
 
   context.fillStyle = 'rgba(255,255,255,.25)';
   context.fillRect(24, 596, canvas.width - 48, 6);
@@ -418,7 +432,111 @@ function drawShortFrame(context, canvas, scene, elapsed, duration) {
   context.fillText(`${Math.ceil(elapsed)}s / ${duration}s`, 24, 626);
 }
 
-function wrapCanvasText(context, text, x, y, maxWidth, lineHeight) {
+function drawTopicVisual(context, scene, elapsed) {
+  const data = scene.visual_data || {};
+  const type = scene.visual_type || inferVisualType(scene);
+  const topic = data.primary || state.wiki?.title || 'IQ.wiki';
+  const items = Array.isArray(data.items) ? data.items.slice(0, 4) : [];
+  const pulse = 1 + Math.sin(elapsed * 4) * 0.025;
+
+  if (type === 'network' || type === 'person') {
+    drawNode(context, 180, 270, topic, 74 * pulse, '#7137d9');
+    const points = [[76, 150], [284, 150], [76, 390], [284, 390]];
+    (items.length ? items : [{ label: data.secondary || 'Key relationship' }]).forEach((item, index) => {
+      const [x, y] = points[index];
+      context.strokeStyle = '#35e7bb';
+      context.lineWidth = 2;
+      context.beginPath(); context.moveTo(180, 270); context.lineTo(x, y); context.stroke();
+      drawNode(context, x, y, item.label, 48, '#24202a');
+    });
+    return;
+  }
+
+  if (type === 'timeline' || type === 'event') {
+    context.strokeStyle = '#7137d9';
+    context.lineWidth = 5;
+    context.beginPath(); context.moveTo(62, 120); context.lineTo(62, 465); context.stroke();
+    const rows = items.length ? items : [{ label: data.date || topic, detail: data.secondary }];
+    rows.forEach((item, index) => {
+      const y = 145 + index * Math.min(95, 300 / Math.max(1, rows.length - 1));
+      context.fillStyle = '#35e7bb';
+      context.beginPath(); context.arc(62, y, 10, 0, Math.PI * 2); context.fill();
+      context.fillStyle = '#ffffff';
+      context.font = '700 19px system-ui';
+      context.fillText(shortWords(item.label, 4), 92, y - 5);
+      context.fillStyle = '#bdb5c7';
+      context.font = '500 14px system-ui';
+      wrapCanvasText(context, shortWords(item.detail, 9), 92, y + 18, 230, 18, 2);
+    });
+    return;
+  }
+
+  if (type === 'metric' || type === 'comparison') {
+    context.fillStyle = '#7137d9';
+    context.fillRect(30, 125, 300, 300);
+    context.fillStyle = '#35e7bb';
+    context.font = '800 56px system-ui';
+    context.textAlign = 'center';
+    wrapCanvasText(context, data.value || topic, 180, 245, 270, 62, 2, 'center');
+    context.fillStyle = '#ffffff';
+    context.font = '700 20px system-ui';
+    wrapCanvasText(context, shortWords(data.secondary, 10), 180, 350, 260, 26, 3, 'center');
+    context.textAlign = 'left';
+    return;
+  }
+
+  if (type === 'process') {
+    const rows = items.length ? items : [{ label: topic }, { label: data.secondary }];
+    rows.slice(0, 4).forEach((item, index) => {
+      const y = 125 + index * 95;
+      context.fillStyle = index % 2 ? '#24202a' : '#7137d9';
+      context.fillRect(38, y, 284, 66);
+      context.fillStyle = '#35e7bb';
+      context.font = '800 24px system-ui';
+      context.fillText(String(index + 1).padStart(2, '0'), 55, y + 41);
+      context.fillStyle = '#ffffff';
+      context.font = '700 16px system-ui';
+      wrapCanvasText(context, shortWords(item.label || item.detail, 7), 98, y + 28, 205, 20, 2);
+    });
+    return;
+  }
+
+  context.fillStyle = '#7137d9';
+  context.beginPath(); context.arc(180, 265, 126 * pulse, 0, Math.PI * 2); context.fill();
+  context.fillStyle = '#35e7bb';
+  context.font = '800 72px system-ui';
+  context.textAlign = 'center';
+  context.fillText(String(topic).trim().charAt(0).toUpperCase(), 180, 290);
+  context.fillStyle = '#ffffff';
+  context.font = '800 27px system-ui';
+  wrapCanvasText(context, shortWords(topic, 6), 180, 430, 300, 34, 3, 'center');
+  context.textAlign = 'left';
+}
+
+function inferVisualType(scene) {
+  const value = `${scene.visual || ''} ${scene.source_fact || ''}`.toLowerCase();
+  if (/\$|\d+\s?(million|billion)|amount|value/.test(value)) return 'metric';
+  if (/\b(19|20)\d{2}\b|timeline|date|launched|founded/.test(value)) return 'timeline';
+  if (/connect|network|person|founder|partner/.test(value)) return 'network';
+  if (/process|step|works|mechanism/.test(value)) return 'process';
+  return 'title';
+}
+
+function drawNode(context, x, y, label, radius, color) {
+  context.fillStyle = color;
+  context.beginPath(); context.arc(x, y, radius, 0, Math.PI * 2); context.fill();
+  context.fillStyle = '#ffffff';
+  context.font = radius > 60 ? '700 17px system-ui' : '700 13px system-ui';
+  context.textAlign = 'center';
+  wrapCanvasText(context, shortWords(label, radius > 60 ? 5 : 3), x, y - 5, radius * 1.55, 17, 3, 'center');
+  context.textAlign = 'left';
+}
+
+function shortWords(value, limit) {
+  return String(value || '').trim().split(/\s+/).slice(0, limit).join(' ');
+}
+
+function wrapCanvasText(context, text, x, y, maxWidth, lineHeight, maxLines = 4, align = 'left') {
   const words = String(text).split(/\s+/);
   let line = '';
   let row = 0;
@@ -428,11 +546,12 @@ function wrapCanvasText(context, text, x, y, maxWidth, lineHeight) {
       context.fillText(line.trim(), x, y + row * lineHeight);
       line = `${word} `;
       row += 1;
+      if (row >= maxLines - 1) break;
     } else {
       line = test;
     }
   }
-  context.fillText(line.trim(), x, y + row * lineHeight);
+  if (line && row < maxLines) context.fillText(line.trim(), x, y + row * lineHeight);
 }
 
 function buildBrowserFallback(tab, wiki, reason) {
@@ -443,16 +562,22 @@ function buildBrowserFallback(tab, wiki, reason) {
 
   if (tab === 'short') {
     const voiceover = clean.slice(0, 4).join(' ').slice(0, 430);
+    const dates = (wiki.dates || extractDates(text)).slice(0, 3);
+    const money = (wiki.moneyMentions || extractMoney(text)).slice(0, 2);
+    const names = extractClientNames(text, wiki.title).slice(0, 4);
+    const fact = index => clean[index] || clean[0] || wiki.summary || '';
+    const items = values => values.map((value, index) => ({ label: value, detail: fact(index + 1) }));
     return {
       hooks: [`${wiki.title} in 30 seconds`, `Why ${wiki.title} matters`, `The quick guide to ${wiki.title}`],
       voiceover,
-      scenes: clean.slice(0, 5).map((sentence, index) => ({
-        time: `${index * 5}-${Math.min(30, (index + 1) * 5)}s`,
-        visual: index === 0 ? wiki.title : `Key fact ${index + 1}`,
-        caption: sentence.slice(0, 120),
-        source_fact: sentence
-      })),
-      suggested_visuals: ['IQ.wiki article title', 'Animated key facts', 'Source link end card'],
+      scenes: [
+        { time: '0-4s', visual_type: 'title', visual: wiki.title, visual_data: { primary: wiki.title, secondary: fact(0), items: [] }, caption: `What is ${wiki.title}?`, source_fact: fact(0) },
+        { time: '4-10s', visual_type: names.length ? 'network' : 'process', visual: 'Article relationships', visual_data: { primary: wiki.title, secondary: fact(1), items: items(names.length ? names : clean.slice(1, 4)) }, caption: 'The key connections', source_fact: fact(1) },
+        { time: '10-16s', visual_type: dates.length ? 'timeline' : 'process', visual: 'Article timeline', visual_data: { primary: wiki.title, secondary: fact(2), date: dates[0] || '', items: items(dates.length ? dates : clean.slice(2, 5)) }, caption: dates.length ? 'The timeline' : 'How it works', source_fact: fact(2) },
+        { time: '16-22s', visual_type: money.length ? 'metric' : 'event', visual: 'Key article fact', visual_data: { primary: wiki.title, secondary: fact(3), value: money[0] || '', items: items(money) }, caption: money.length ? 'The key number' : 'Why it matters', source_fact: fact(3) },
+        { time: '22-28s', visual_type: 'end', visual: wiki.title, visual_data: { primary: wiki.title, secondary: 'Read the sourced article on IQ.wiki', items: [] }, caption: 'Explore the full wiki', source_fact: fact(4) }
+      ],
+      suggested_visuals: ['Article-derived entity map', 'Article-derived timeline or metric', 'IQ.wiki source end card'],
       tiktok_caption: `${wiki.title}, explained quickly. Read the full article on IQ.wiki.`,
       x_caption: `${wiki.title} in under 30 seconds. Full context on IQ.wiki.`,
       fact_check: ['Compare every scene with the loaded wiki text.'],
@@ -644,6 +769,12 @@ function extractDates(text) {
 }
 function extractMoney(text) {
   return [...new Set((text.match(/\$\s?\d+(?:\.\d+)?\s?(?:k|m|b|million|billion)?|\d+(?:\.\d+)?\s?(?:million|billion)\s?(?:USD|dollars)?/gi) || []).slice(0, 10))];
+}
+function extractClientNames(text, title) {
+  const blocked = new Set(['The', 'This', 'That', 'These', 'It', 'In', 'On', 'As', 'A', 'An']);
+  const matches = String(text).match(/\b[A-Z][A-Za-z0-9.-]+(?:\s+(?:[A-Z][A-Za-z0-9.-]+|of|the|and)){0,3}\b/g) || [];
+  return [...new Set(matches.map(value => value.trim()))]
+    .filter(value => value !== title && !blocked.has(value) && value.length > 2);
 }
 function escapeHtml(value = '') {
   return String(value)
