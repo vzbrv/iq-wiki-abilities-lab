@@ -1,12 +1,12 @@
 # IQ.wiki Abilities Lab
 
-A lightweight, free-tier prototype that turns an IQ.wiki page into three AI-powered content modules:
+A free, deployable app that turns an IQ.wiki page into three AI-powered content modules:
 
-1. **Short Video Studio** — hooks, 30-second voiceover, scene list, captions, TikTok/X captions, and a fake vertical preview.
+1. **Short Video Studio** — a one-click, embedded 15–30 second animated explainer with captions and browser narration.
 2. **Funding & Token Sale Timeline** — extracts funding/token sale info only when it is present in the loaded wiki text; otherwise shows placeholders.
 3. **Crypto Lore** — converts the wiki into a story-style lore page with timeline, why it mattered, money involved, key people/projects, and editor-review notes.
 
-The app is standalone now, but designed so each tab can later become an embeddable IQ.wiki widget.
+The app works standalone and each result can be embedded as an IQ.wiki widget.
 
 ---
 
@@ -20,7 +20,8 @@ This prototype is designed to run on free tiers:
 - Default model: `openrouter/free`
 - Database: none
 - Paid APIs: none
-- Real video rendering: none
+- Video playback: browser canvas and built-in speech synthesis
+- Paid model fallback: disabled
 
 The OpenRouter API key is used only in the serverless function and is never exposed in browser code.
 
@@ -44,7 +45,9 @@ The AI receives only the loaded wiki text. It is explicitly instructed not to in
 - Server-side page fetch and text extraction
 - Manual paste fallback
 - Sample wiki fallback
-- Real AI generation through OpenRouter
+- Free-only AI generation through OpenRouter
+- Deterministic local fallback when free models are unavailable or rate-limited
+- Embedded short-video playback with narration
 - Copy buttons
 - Widget preview mode
 - Production explanation modals
@@ -55,10 +58,10 @@ The AI receives only the loaded wiki text. It is explicitly instructed not to in
 ## Current limitations
 
 - IQ.wiki page extraction is simple HTML parsing, not a proper IQ.wiki API integration.
-- OpenRouter free models can be rate-limited or inconsistent.
+- OpenRouter free models can be rate-limited or inconsistent; local generation keeps the app working.
 - Funding data is extracted only if present in the loaded wiki text.
 - No external funding databases are called.
-- No real video file is rendered.
+- Video is embedded and played in-browser; no MP4 is exported.
 - All generated outputs are drafts and require editor review.
 
 ---
@@ -99,7 +102,7 @@ Optional:
 OPENROUTER_MODEL=openrouter/free
 ```
 
-You can later change `OPENROUTER_MODEL` to another model without touching frontend code.
+`OPENROUTER_MODEL` must be `openrouter/free` or end in `:free`. Paid model IDs are rejected and use the local fallback.
 
 ---
 

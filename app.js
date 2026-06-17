@@ -62,6 +62,7 @@ let state = {
   widgetMode: false,
   outputs: {}
 };
+let shortPlayback = { frame: 0 };
 
 const $ = (id) => document.getElementById(id);
 const loader = $('loader');
@@ -115,6 +116,7 @@ function attachEvents() {
   });
 
   $('resetBtn').addEventListener('click', () => {
+    stopShortPlayback();
     workspace.classList.add('hidden');
     loader.classList.remove('hidden');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -136,6 +138,12 @@ function attachEvents() {
   });
 
   document.body.addEventListener('click', async (event) => {
+    const play = event.target.closest('[data-play-video]');
+    if (play) {
+      startShortPlayback(true);
+      return;
+    }
+
     const copy = event.target.closest('[data-copy]');
     if (copy) {
       const text = decodeURIComponent(copy.dataset.copy);
@@ -224,18 +232,20 @@ function renderWikiSummary() {
   $('wikiSummaryText').textContent = wiki.summary || wiki.rawText?.slice(0, 260) || 'No summary extracted yet.';
   const badges = [
     wiki.loadMode || 'loaded content',
-    'real AI generation',
+    'free AI + local fallback',
     'editor review required',
-    'widget-ready mockup'
+    'embedded video'
   ];
   $('wikiBadges').innerHTML = badges.map((badge, idx) => `<span class="badge ${idx === 1 ? 'good' : idx === 2 ? 'warn' : ''}">${escapeHtml(badge)}</span>`).join('');
 }
 
 function setActiveTab(tabKey) {
+  stopShortPlayback();
   state.activeTab = tabKey;
   document.querySelectorAll('.tab').forEach(tab => tab.classList.toggle('active', tab.dataset.tab === tabKey));
   $('activeAbilityLabel').textContent = abilityCopy[tabKey].label;
   $('activeAbilityTitle').textContent = abilityCopy[tabKey].title;
+  $('generateBtn').textContent = tabKey === 'short' ? 'Generate 15–30s video' : 'Generate ability';
   renderOutput();
 }
 
@@ -254,13 +264,22 @@ async function generateCurrentAbility() {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'AI generation failed');
-    state.outputs[state.activeTab] = data.result;
+    state.outputs[state.activeTab] = {
+      ...data.result,
+      _delivery: {
+        provider: data.provider,
+        model: data.model,
+        freeOnly: data.freeOnly,
+        fallbackReason: data.fallbackReason
+      }
+    };
     renderOutput();
-    showStatus('Generated. Review before publishing or embedding.');
+    showStatus(data.provider === 'openrouter' ? 'Generated with a free AI model.' : 'Generated locally at no cost.');
     setTimeout(() => hideStatus(), 1800);
   } catch (error) {
-    output.innerHTML = `<div class="empty-state"><strong>Generation failed.</strong><br>${escapeHtml(error.message)}<br><br>Check that OPENROUTER_API_KEY is set in your serverless environment, or try again if the free model is rate-limited.</div>`;
-    showStatus(error.message, true);
+    state.outputs[state.activeTab] = buildBrowserFallback(state.activeTab, state.wiki, error.message);
+    renderOutput();
+    showStatus('Free AI unavailable. Generated locally without switching to a paid model.');
   } finally {
     $('generateBtn').disabled = false;
   }
@@ -280,7 +299,7 @@ function renderOutput() {
 
 function emptyStateForTab(tab) {
   const copy = {
-    short: 'Generate AI hooks, script, captions, scene list, social captions, and a fake vertical preview.',
+    short: 'Generate a playable 15–30 second explainer with captions, narration, and source-backed scenes.',
     funding: 'Generate a structured funding/token sale table using wiki content first. Missing data becomes placeholders.',
     lore: 'Generate a story-style crypto lore page from the loaded wiki.'
   };
@@ -290,29 +309,25 @@ function emptyStateForTab(tab) {
 function renderShort(data) {
   const hooks = Array.isArray(data.hooks) ? data.hooks : [];
   const scenes = Array.isArray(data.scenes) ? data.scenes : [];
-  const hook = hooks[0] || `The story of ${state.wiki.title}`;
-  const caption = scenes[0]?.caption || data.cta || 'Full wiki on IQ.wiki';
+  const delivery = data._delivery || {};
   output.innerHTML = `
-    <div class="grid-two">
-      <div class="card">
-        <h4>Hook options</h4>
-        <ol>${hooks.map(h => `<li>${escapeHtml(h)}</li>`).join('')}</ol>
-        ${actionButtons(hooks.join('\n'))}
+    <div class="video-layout">
+      <div class="video-player">
+        <canvas id="shortVideoCanvas" width="360" height="640" aria-label="Generated wiki explainer video"></canvas>
+        <button class="video-play" data-play-video type="button" aria-label="Play video with narration">▶</button>
       </div>
-      <div class="phone-wrap">
-        <div class="phone">
-          <div class="phone-screen">
-            <div class="phone-hook">${escapeHtml(hook)}</div>
-            <div class="phone-caption">${escapeHtml(caption)}</div>
-            <div class="phone-cta">Read full sources on IQ.wiki →</div>
-          </div>
-        </div>
+      <div class="card">
+        <span class="badge good">${delivery.provider === 'openrouter' ? 'Free AI' : 'Free local fallback'}</span>
+        <h4>15–30 second explainer</h4>
+        <p>${escapeHtml(data.voiceover || '')}</p>
+        <button class="primary-btn" data-play-video type="button">Play with narration</button>
+        ${actionButtons(data.voiceover || '')}
       </div>
     </div>
     <div class="card">
-      <h4>30-second voiceover</h4>
-      <p>${escapeHtml(data.voiceover || '').replace(/\n/g, '<br>')}</p>
-      ${actionButtons(data.voiceover || '')}<button class="copy-btn" data-open-modal="render-video">Render video later</button>
+        <h4>Hook options</h4>
+        <ol>${hooks.map(h => `<li>${escapeHtml(h)}</li>`).join('')}</ol>
+        ${actionButtons(hooks.join('\n'))}
     </div>
     <div class="card">
       <h4>Scene-by-scene shot list</h4>
@@ -334,6 +349,153 @@ function renderShort(data) {
     <div class="card"><h4>Suggested visuals</h4><ul>${(data.suggested_visuals || []).map(v => `<li>${escapeHtml(v)}</li>`).join('')}</ul></div>
     <div class="card"><h4>Fact-check checklist</h4><ul>${(data.fact_check || []).map(v => `<li>${escapeHtml(v)}</li>`).join('')}</ul></div>
   `;
+  requestAnimationFrame(() => startShortPlayback(false));
+}
+
+function stopShortPlayback() {
+  if (shortPlayback.frame) cancelAnimationFrame(shortPlayback.frame);
+  shortPlayback.frame = 0;
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+}
+
+function startShortPlayback(withNarration = false) {
+  const canvas = $('shortVideoCanvas');
+  const data = state.outputs.short;
+  if (!canvas || !data) return;
+
+  stopShortPlayback();
+  const scenes = data.scenes?.length ? data.scenes : [{
+    time: '0-15s',
+    visual: state.wiki?.title || 'IQ.wiki',
+    caption: data.voiceover || ''
+  }];
+  const finalTime = String(scenes.at(-1)?.time || '').match(/\d+/g) || [];
+  const duration = Math.max(15, Math.min(30, Number(finalTime.at(-1)) || scenes.length * 5));
+  const context = canvas.getContext('2d');
+  const started = performance.now();
+
+  if (withNarration && 'speechSynthesis' in window) {
+    const narration = new SpeechSynthesisUtterance(data.voiceover || scenes.map(scene => scene.caption).join('. '));
+    narration.rate = 1.08;
+    window.speechSynthesis.speak(narration);
+  }
+
+  const draw = (now) => {
+    const elapsed = Math.min((now - started) / 1000, duration);
+    const sceneIndex = Math.min(scenes.length - 1, Math.floor((elapsed / duration) * scenes.length));
+    drawShortFrame(context, canvas, scenes[sceneIndex], elapsed, duration);
+    if (elapsed < duration) shortPlayback.frame = requestAnimationFrame(draw);
+  };
+  shortPlayback.frame = requestAnimationFrame(draw);
+}
+
+function drawShortFrame(context, canvas, scene, elapsed, duration) {
+  const progress = elapsed / duration;
+  const hue = 278 + Math.round(progress * 42);
+  const gradient = context.createLinearGradient(0, 0, canvas.width, canvas.height);
+  gradient.addColorStop(0, `hsl(${hue} 72% 24%)`);
+  gradient.addColorStop(1, `hsl(${hue + 55} 70% 12%)`);
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  context.fillStyle = 'rgba(255,255,255,.1)';
+  context.fillRect(24, 72, canvas.width - 48, 330);
+  context.fillStyle = '#35e7bb';
+  context.font = '700 18px system-ui';
+  context.fillText('IQ.wiki', 24, 42);
+  context.fillStyle = '#ffffff';
+  context.font = '700 28px system-ui';
+  wrapCanvasText(context, scene.visual || state.wiki?.title || 'Wiki explainer', 42, 135, 276, 36);
+  context.font = '600 22px system-ui';
+  wrapCanvasText(context, scene.caption || scene.voiceover || '', 42, 440, 276, 30);
+
+  context.fillStyle = 'rgba(255,255,255,.25)';
+  context.fillRect(24, 596, canvas.width - 48, 6);
+  context.fillStyle = '#35e7bb';
+  context.fillRect(24, 596, (canvas.width - 48) * progress, 6);
+  context.fillStyle = '#ffffff';
+  context.font = '600 14px system-ui';
+  context.fillText(`${Math.ceil(elapsed)}s / ${duration}s`, 24, 626);
+}
+
+function wrapCanvasText(context, text, x, y, maxWidth, lineHeight) {
+  const words = String(text).split(/\s+/);
+  let line = '';
+  let row = 0;
+  for (const word of words) {
+    const test = `${line}${word} `;
+    if (context.measureText(test).width > maxWidth && line) {
+      context.fillText(line.trim(), x, y + row * lineHeight);
+      line = `${word} `;
+      row += 1;
+    } else {
+      line = test;
+    }
+  }
+  context.fillText(line.trim(), x, y + row * lineHeight);
+}
+
+function buildBrowserFallback(tab, wiki, reason) {
+  const text = wiki.rawText || wiki.summary || '';
+  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
+  const clean = sentences.map(sentence => sentence.trim()).filter(Boolean);
+  const delivery = { provider: 'browser-local', model: 'local-draft', freeOnly: true, fallbackReason: reason };
+
+  if (tab === 'short') {
+    const voiceover = clean.slice(0, 4).join(' ').slice(0, 430);
+    return {
+      hooks: [`${wiki.title} in 30 seconds`, `Why ${wiki.title} matters`, `The quick guide to ${wiki.title}`],
+      voiceover,
+      scenes: clean.slice(0, 5).map((sentence, index) => ({
+        time: `${index * 5}-${Math.min(30, (index + 1) * 5)}s`,
+        visual: index === 0 ? wiki.title : `Key fact ${index + 1}`,
+        caption: sentence.slice(0, 120),
+        source_fact: sentence
+      })),
+      suggested_visuals: ['IQ.wiki article title', 'Animated key facts', 'Source link end card'],
+      tiktok_caption: `${wiki.title}, explained quickly. Read the full article on IQ.wiki.`,
+      x_caption: `${wiki.title} in under 30 seconds. Full context on IQ.wiki.`,
+      fact_check: ['Compare every scene with the loaded wiki text.'],
+      _delivery: delivery
+    };
+  }
+
+  if (tab === 'funding') {
+    return {
+      total_raised_found: wiki.moneyMentions?.join(', ') || 'Not found in loaded wiki text',
+      token_sale_status: wiki.moneyMentions?.length ? 'Mentions found; review required' : 'Not found',
+      confidence: 'Editor review',
+      rows: [{
+        date: wiki.dates?.[0] || 'Not found',
+        type: 'Funding or token sale',
+        amount: wiki.moneyMentions?.[0] || 'Not found in loaded wiki text',
+        valuation_or_price: 'Not found in loaded wiki text',
+        investors_or_platform: 'Not found in loaded wiki text',
+        source_status: 'Editor review required'
+      }],
+      notes: 'Generated locally from literal date and money mentions.',
+      warnings: ['No paid enrichment source was used.'],
+      _delivery: delivery
+    };
+  }
+
+  return {
+    dramatic_title: `The ${wiki.title} Story`,
+    short_version: clean.slice(0, 3).join(' '),
+    why_it_mattered: clean[3] || clean[1] || clean[0] || '',
+    timeline: (wiki.dates || []).map(date => ({
+      date,
+      event: clean.find(sentence => sentence.includes(date)) || `Event mentioned in ${date}`,
+      context: 'From loaded wiki text'
+    })),
+    money_involved: wiki.moneyMentions?.length ? wiki.moneyMentions : ['No amount found in loaded wiki text'],
+    key_people_projects: [wiki.title],
+    turning_point: clean.slice(-2).join(' '),
+    receipts_needed: ['Review against the original IQ.wiki article and sources.'],
+    related_wikis: [],
+    cta: 'Read the full article on IQ.wiki.',
+    _delivery: delivery
+  };
 }
 
 function renderFunding(data) {
@@ -435,14 +597,14 @@ function closeModal() { $('modal').classList.add('hidden'); }
 function modalContent(kind) {
   const blocks = {
     architecture: {
-      title: 'How this becomes real',
-      body: `<p>This prototype uses a serverless function to call real AI without exposing the API key in the browser.</p>
+      title: 'How this works',
+      body: `<p>The serverless function calls free OpenRouter models without exposing the API key.</p>
         <ol>
           <li>Fetch wiki content server-side from the pasted IQ.wiki URL.</li>
           <li>Send the loaded article text to the AI with strict JSON prompts.</li>
           <li>Render the selected ability as a standalone tab or embeddable widget.</li>
           <li>Mark missing facts as placeholders instead of inventing data.</li>
-          <li>Later: connect IQ.wiki API, Sophia, source-aware generation, and editor approval.</li>
+          <li>If free AI is unavailable, generate a deterministic local version. Never use a paid model.</li>
         </ol>`
     },
     embed: {
@@ -450,16 +612,16 @@ function modalContent(kind) {
       body: `<p>In production, this ability could be rendered as an iframe, web component, or native IQ.wiki tab using the current wiki slug.</p><p><code>&lt;iq-ability-widget slug="nexus" ability="${state.activeTab}"&gt;&lt;/iq-ability-widget&gt;</code></p>`
     },
     'render-video': {
-      title: 'Render video later',
-      body: `<p>This free prototype generates the video plan only. A production version could send the script, captions, and scene list into a template renderer, then save the MP4 back to the wiki page.</p><p>Current free mode: script + captions + fake phone preview.</p>`
+      title: 'Embedded video',
+      body: `<p>The widget renders an animated vertical video in the browser and narrates it with the visitor's built-in speech engine. It needs no paid rendering service or downloadable file.</p>`
     },
     'editor-review': {
       title: 'Editor review',
       body: `<p>In production, this would save the generated module to an editorial queue. Editors would approve, edit, reject, or request source checks before publishing.</p>`
     },
     'production-short': {
-      title: 'Short Video Studio production version',
-      body: `<p>Next step: connect a video rendering service or Remotion template. The AI already returns scenes, captions, visual suggestions, and a voiceover script.</p>`
+      title: 'Short Video Studio',
+      body: `<p>One click creates the script and scenes with a free OpenRouter model, then plays the result as an embedded 15–30 second canvas video with browser narration. If free AI is unavailable, local generation keeps the widget working.</p>`
     },
     'production-funding': {
       title: 'Funding Timeline production version',
