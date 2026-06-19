@@ -2,7 +2,7 @@
 
 A free, deployable app that turns an IQ.wiki page into three AI-powered content modules:
 
-1. **Short Video Studio** — a one-click, embedded 15–30 second animated explainer with captions and browser narration.
+1. **Short Video Studio** — generates a source-backed 15–30 second scenario, script, and scene plan, with an in-browser preview.
 2. **Funding & Token Sale Timeline** — extracts funding/token sale info only when it is present in the loaded wiki text; otherwise shows placeholders.
 3. **Crypto Lore** — converts the wiki into a story-style lore page with timeline, why it mattered, money involved, key people/projects, and editor-review notes.
 
@@ -10,20 +10,30 @@ The app works standalone and each result can be embedded as an IQ.wiki widget.
 
 ---
 
-## Free stack
+## Current stack
 
-This prototype is designed to run on free tiers:
+The working app is designed to run on free tiers:
 
 - Frontend: static HTML/CSS/JS
 - Hosting + serverless API: Vercel free tier
-- AI: OpenRouter free models
+- Scenario/content AI: OpenRouter free models
 - Default model: `openrouter/free`
+- Generative video: separate provider slot, currently unconfigured and disabled
 - Database: none
 - Paid APIs: none
-- Video playback: browser canvas and built-in speech synthesis
+- Scenario preview: browser canvas and built-in speech synthesis
 - Paid model fallback: disabled
 
-The OpenRouter API key is used only in the serverless function and is never exposed in browser code.
+The OpenRouter API key is used only for scenario/content generation in the serverless function and is never exposed in browser code. It is not a video-generation key.
+
+## Provider boundary
+
+- `video_scenario` calls OpenRouter using a free-only model and returns planning JSON.
+- OpenRouter never renders video in this app.
+- Generative video requires a separate provider, model, API key, and API call.
+- No video provider or video API key is configured yet, so **Generate AI video** is disabled.
+- The server accepts legacy `short_video` requests for compatibility and treats them as `video_scenario`.
+- `OPENROUTER_API_KEY` must never be forwarded to a future video provider.
 
 ---
 
@@ -31,7 +41,7 @@ The OpenRouter API key is used only in the serverless function and is never expo
 
 The three generation tabs call `/api/generate`, which calls OpenRouter:
 
-- `short_video`
+- `video_scenario`
 - `funding_timeline`
 - `crypto_lore`
 
@@ -47,7 +57,9 @@ The AI receives only the loaded wiki text. It is explicitly instructed not to in
 - Sample wiki fallback
 - Free-only AI generation through OpenRouter
 - Deterministic local fallback when free models are unavailable or rate-limited
-- Embedded short-video playback with narration
+- Source-backed video scenario generation
+- Embedded scenario preview with narration
+- Disabled generative-video handoff ready for a separate provider
 - Copy buttons
 - Widget preview mode
 - Production explanation modals
@@ -61,7 +73,8 @@ The AI receives only the loaded wiki text. It is explicitly instructed not to in
 - OpenRouter free models can be rate-limited or inconsistent; local generation keeps the app working.
 - Funding data is extracted only if present in the loaded wiki text.
 - No external funding databases are called.
-- Video is embedded and played in-browser; no MP4 is exported.
+- The canvas is a scenario preview, not generative video.
+- No generative video model is connected, and no MP4 is rendered.
 - All generated outputs are drafts and require editor review.
 
 ---
@@ -104,6 +117,8 @@ OPENROUTER_MODEL=openrouter/free
 
 `OPENROUTER_MODEL` must be `openrouter/free` or end in `:free`. Paid model IDs are rejected and use the local fallback.
 
+There is intentionally no video-provider environment variable yet. Add one only when a separate video model is selected.
+
 ---
 
 ## Deploy on Vercel for free
@@ -142,7 +157,7 @@ https://your-iq-abilities-api.vercel.app/api/generate
 To turn this into a real IQ.wiki feature:
 
 1. Replace HTML scraping with IQ.wiki API content fetch.
-2. Add Sophia/OpenAI/internal model option.
+2. Choose and connect a separate generative-video provider and API key.
 3. Add citation-aware generation from wiki sources.
 4. Add external funding enrichment only after wiki extraction fails.
 5. Add editor approval workflow.
@@ -150,8 +165,9 @@ To turn this into a real IQ.wiki feature:
    - Short Video Studio widget
    - Funding Timeline widget
    - Crypto Lore widget
-7. Add optional real video rendering:
-   - AI script
+7. Add generative video rendering:
+   - OpenRouter Free scenario JSON as input
+   - Separate video provider and model
    - AI voice
    - Remotion/template renderer
    - MP4 stored and embedded on wiki pages
@@ -174,7 +190,7 @@ README.md
 
 ## Safety / accuracy rule
 
-For funding and token sale data, the prototype must not hallucinate. If the loaded wiki text does not contain a raise amount, token price, valuation, investor, or launchpad, the output should say:
+For funding and token sale data, the app must not hallucinate. If the loaded wiki text does not contain a raise amount, token price, valuation, investor, or launchpad, the output should say:
 
 ```text
 Not found in loaded wiki text
