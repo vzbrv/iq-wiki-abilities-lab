@@ -34,4 +34,24 @@ Use `?embed=1` for the compact embedded layout. Use `?api=https://api.example` o
 ```bash
 npm test
 npm run check
+npm run deploy:check
 ```
+
+## Video integration boundary
+
+`/api/video` provides capability, generate, poll, retry, cancel, and playback job states. It is disabled by default and cannot select a provider or paid model automatically.
+
+Local lifecycle testing:
+
+```bash
+VIDEO_ENGINE_ENABLED=true
+VIDEO_PROVIDER=mock
+VIDEO_PROVIDER_ALLOWLIST=mock
+VIDEO_MODEL=mock-video-v1
+VIDEO_MODEL_ALLOWLIST=mock-video-v1
+VIDEO_MOCK_ENABLED=true
+VIDEO_MAX_JOB_USD=0
+VIDEO_DAILY_CAP_USD=0
+```
+
+The mock provider is rejected when `NODE_ENV=production`. Real providers also require a server-side `VIDEO_API_KEY`, explicit provider/model allowlists, and per-job/daily spending caps. A durable job store and spending ledger must replace the process-local test stores before a real provider is enabled.
