@@ -159,6 +159,19 @@ Visuals must depict article entities, products, events, places, timelines, metri
 }
 
 async function callOpenRouter(prompt, host, model) {
+  let invalidResponse;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await requestOpenRouter(prompt, host, model, attempt);
+    } catch (error) {
+      if (error.code !== 'INVALID_MODEL_RESPONSE' && error.code !== 'EMPTY_MODEL_RESPONSE') throw error;
+      invalidResponse = error;
+    }
+  }
+  throw invalidResponse;
+}
+
+async function requestOpenRouter(prompt, host, model, attempt) {
   const response = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
@@ -169,11 +182,18 @@ async function callOpenRouter(prompt, host, model) {
     },
     body: JSON.stringify({
       model,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [
+        {
+          role: 'system',
+          content: 'Return one complete JSON object only. Do not use Markdown or add explanatory text.'
+        },
+        { role: 'user', content: prompt }
+      ],
       response_format: { type: 'json_object' },
-      temperature: 0.4
+      temperature: attempt === 0 ? 0.3 : 0,
+      max_tokens: 1800
     }),
-    signal: AbortSignal.timeout(25000)
+    signal: AbortSignal.timeout(attempt === 0 ? 25000 : 15000)
   }).catch((error) => {
     if (error.name === 'TimeoutError') throw new AppError(504, 'FREE_MODEL_TIMEOUT', 'The free model timed out.', true);
     throw new AppError(503, 'FREE_MODEL_UNAVAILABLE', 'The free model is unavailable.', true);
