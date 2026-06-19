@@ -41,8 +41,8 @@ const samples = [
 const abilityCopy = {
   short: {
     label: 'Short Video Studio',
-    title: 'Generate a TikTok/Reels-style short from this wiki',
-    action: 'short_video'
+    title: 'Generate a 15–30 second video scenario from this wiki',
+    action: 'video_scenario'
   },
   funding: {
     label: 'Funding & Token Sale Timeline',
@@ -232,9 +232,10 @@ function renderWikiSummary() {
   $('wikiSummaryText').textContent = wiki.summary || wiki.rawText?.slice(0, 260) || 'No summary extracted yet.';
   const badges = [
     wiki.loadMode || 'loaded content',
-    'free AI + local fallback',
+    'OpenRouter Free scenario',
+    'video provider not connected',
     'editor review required',
-    'embedded video'
+    'scenario preview'
   ];
   $('wikiBadges').innerHTML = badges.map((badge, idx) => `<span class="badge ${idx === 1 ? 'good' : idx === 2 ? 'warn' : ''}">${escapeHtml(badge)}</span>`).join('');
 }
@@ -245,7 +246,7 @@ function setActiveTab(tabKey) {
   document.querySelectorAll('.tab').forEach(tab => tab.classList.toggle('active', tab.dataset.tab === tabKey));
   $('activeAbilityLabel').textContent = abilityCopy[tabKey].label;
   $('activeAbilityTitle').textContent = abilityCopy[tabKey].title;
-  $('generateBtn').textContent = tabKey === 'short' ? 'Generate 15–30s video' : 'Generate ability';
+  $('generateBtn').textContent = tabKey === 'short' ? 'Generate script & scenes' : 'Generate ability';
   renderOutput();
 }
 
@@ -270,11 +271,18 @@ async function generateCurrentAbility() {
         provider: data.provider,
         model: data.model,
         freeOnly: data.freeOnly,
-        fallbackReason: data.fallbackReason
+        fallbackReason: data.fallbackReason,
+        pipeline: data.pipeline
       }
     };
     renderOutput();
-    showStatus(data.provider === 'openrouter' ? 'Generated with a free AI model.' : 'Generated locally at no cost.');
+    showStatus(state.activeTab === 'short'
+      ? data.provider === 'openrouter'
+        ? 'Scenario generated with OpenRouter Free. Video provider is not connected.'
+        : 'Scenario generated locally. No paid model was used; video provider is not connected.'
+      : data.provider === 'openrouter'
+        ? 'Generated with a free AI model.'
+        : 'Generated locally at no cost.');
     setTimeout(() => hideStatus(), 1800);
   } catch (error) {
     state.outputs[state.activeTab] = buildBrowserFallback(state.activeTab, state.wiki, error.message);
@@ -299,7 +307,7 @@ function renderOutput() {
 
 function emptyStateForTab(tab) {
   const copy = {
-    short: 'Generate a playable 15–30 second explainer with captions, narration, and source-backed scenes.',
+    short: 'Generate a source-backed script and scene plan. AI video rendering is connected separately.',
     funding: 'Generate a structured funding/token sale table using wiki content first. Missing data becomes placeholders.',
     lore: 'Generate a story-style crypto lore page from the loaded wiki.'
   };
@@ -313,14 +321,17 @@ function renderShort(data) {
   output.innerHTML = `
     <div class="video-layout">
       <div class="video-player">
-        <canvas id="shortVideoCanvas" width="360" height="640" aria-label="Generated wiki explainer video"></canvas>
-        <button class="video-play" data-play-video type="button" aria-label="Play video with narration">▶</button>
+        <canvas id="shortVideoCanvas" width="360" height="640" aria-label="Video scenario preview"></canvas>
+        <button class="video-play" data-play-video type="button" aria-label="Preview scenario with browser narration">▶</button>
       </div>
       <div class="card">
-        <span class="badge good">${delivery.provider === 'openrouter' ? 'Free AI' : 'Free local fallback'}</span>
-        <h4>15–30 second explainer</h4>
+        <span class="badge good">${delivery.provider === 'openrouter' ? 'Scenario: OpenRouter Free' : 'Scenario: local fallback'}</span>
+        <span class="badge warn">Video model: not connected</span>
+        <h4>15–30 second video scenario</h4>
         <p>${escapeHtml(data.voiceover || '')}</p>
-        <button class="primary-btn" data-play-video type="button">Play with narration</button>
+        <p>${delivery.provider === 'openrouter' ? 'OpenRouter generated the script and scene plan only.' : 'The local fallback generated the script and scene plan only.'} No video model was called.</p>
+        <button class="primary-btn" data-play-video type="button">Preview scenario</button>
+        <button class="secondary-btn" type="button" disabled title="Connect a separate video provider and API key to enable">Generate AI video</button>
         ${actionButtons(data.voiceover || '')}
       </div>
     </div>
@@ -558,7 +569,19 @@ function buildBrowserFallback(tab, wiki, reason) {
   const text = wiki.rawText || wiki.summary || '';
   const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
   const clean = sentences.map(sentence => sentence.trim()).filter(Boolean);
-  const delivery = { provider: 'browser-local', model: 'local-draft', freeOnly: true, fallbackReason: reason };
+  const delivery = {
+    provider: 'browser-local',
+    model: 'local-draft',
+    freeOnly: true,
+    fallbackReason: reason
+  };
+
+  if (tab === 'short') {
+    delivery.pipeline = {
+      scenario: { provider: 'local', model: 'local-draft', freeOnly: true },
+      video: { provider: null, model: null, configured: false, status: 'not_configured' }
+    };
+  }
 
   if (tab === 'short') {
     const voiceover = clean.slice(0, 4).join(' ').slice(0, 430);
@@ -726,7 +749,8 @@ function modalContent(kind) {
       body: `<p>The serverless function calls free OpenRouter models without exposing the API key.</p>
         <ol>
           <li>Fetch wiki content server-side from the pasted IQ.wiki URL.</li>
-          <li>Send the loaded article text to the AI with strict JSON prompts.</li>
+          <li>Use OpenRouter Free to generate the scenario, script, and scene plan.</li>
+          <li>Keep generative video as a separate provider, model, and API key.</li>
           <li>Render the selected ability as a standalone tab or embeddable widget.</li>
           <li>Mark missing facts as placeholders instead of inventing data.</li>
           <li>If free AI is unavailable, generate a deterministic local version. Never use a paid model.</li>
@@ -737,8 +761,8 @@ function modalContent(kind) {
       body: `<p>In production, this ability could be rendered as an iframe, web component, or native IQ.wiki tab using the current wiki slug.</p><p><code>&lt;iq-ability-widget slug="nexus" ability="${state.activeTab}"&gt;&lt;/iq-ability-widget&gt;</code></p>`
     },
     'render-video': {
-      title: 'Embedded video',
-      body: `<p>The widget renders an animated vertical video in the browser and narrates it with the visitor's built-in speech engine. It needs no paid rendering service or downloadable file.</p>`
+      title: 'Scenario preview',
+      body: `<p>The browser canvas previews the OpenRouter-generated scene plan with optional narration. It is not generative video. A separate video provider will render the final clip once configured.</p>`
     },
     'editor-review': {
       title: 'Editor review',
@@ -746,7 +770,7 @@ function modalContent(kind) {
     },
     'production-short': {
       title: 'Short Video Studio',
-      body: `<p>One click creates the script and scenes with a free OpenRouter model, then plays the result as an embedded 15–30 second canvas video with browser narration. If free AI is unavailable, local generation keeps the widget working.</p>`
+      body: `<p>OpenRouter Free generates only the script and scene plan. A separate video provider and API key will render the generative video later. The disabled button marks that integration boundary.</p>`
     },
     'production-funding': {
       title: 'Funding Timeline production version',

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>IQ.wiki Abilities Lab</title>
-  <meta name="description" content="Paste an IQ.wiki link and generate AI-powered short video scripts, funding timelines, and crypto lore widgets.">
+  <meta name="description" content="Paste an IQ.wiki link and generate AI-powered video scenarios, funding timelines, and crypto lore widgets.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;650;750;850;900&display=swap" rel="stylesheet">
@@ -17,7 +17,7 @@
   <header class="site-header">
     <a class="brand" href="#top" aria-label="IQ.wiki Abilities Lab home">
       <span class="brand-mark">IQ</span>
-      <span><strong>IQ.wiki Abilities Lab</strong><small>real AI · free model · widget-ready</small></span>
+      <span><strong>IQ.wiki Abilities Lab</strong><small>scenario AI · free-only · widget-ready</small></span>
     </a>
     <nav class="top-nav" aria-label="Top navigation">
       <a href="#loader">Load wiki</a>
@@ -31,7 +31,7 @@
       <div class="hero-copy">
         <span class="eyebrow">Working standalone · ready to embed</span>
         <h1>Turn any IQ.wiki page into AI-powered content modules.</h1>
-        <p>Paste a real IQ.wiki link, choose a sample wiki, or paste article text manually. Generate short video scripts, funding/token sale timelines, and crypto lore pages using OpenRouter free models through a secure serverless API.</p>
+        <p>Paste a real IQ.wiki link, choose a sample wiki, or paste article text manually. OpenRouter Free generates video scenarios, funding timelines, and crypto lore. Generative video uses a separate provider only after its own API key is configured.</p>
         <div class="pill-row">
           <span class="pill">Short Video Studio</span>
           <span class="pill">Funding Timeline</span>
@@ -81,6 +81,8 @@
         <div class="source-box">
           <strong>Free-only rule</strong>
           <p>AI can only use the loaded wiki text. If funding data is not present, the app shows placeholders instead of inventing facts.</p>
+          <strong>Separate video provider</strong>
+          <p>OpenRouter generates the scenario only. Generative video stays disabled until its own provider, model, and API key are configured.</p>
         </div>
       </aside>
 
@@ -94,11 +96,11 @@
         <div class="tab-toolbar">
           <div>
             <span id="activeAbilityLabel" class="eyebrow">Short Video Studio</span>
-            <h3 id="activeAbilityTitle">Generate a TikTok/Reels-style short from this wiki</h3>
+            <h3 id="activeAbilityTitle">Generate a 15–30 second video scenario from this wiki</h3>
           </div>
           <div class="toolbar-actions">
             <button id="widgetToggle" class="secondary-btn" aria-pressed="false">Widget preview</button>
-            <button id="generateBtn" class="primary-btn">Generate 15–30s video</button>
+            <button id="generateBtn" class="primary-btn">Generate script &amp; scenes</button>
           </div>
         </div>
 
@@ -120,8 +122,8 @@
     <div class="loading-card">
       <div class="spinner"></div>
       <div>
-        <strong>Generating with AI...</strong>
-        <p>Using the loaded wiki text only. Missing facts will be marked for editor review.</p>
+        <strong>Generating scenario or content...</strong>
+        <p>OpenRouter is used for planning and text only. No video model is called.</p>
       </div>
     </div>
   </template>

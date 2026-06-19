@@ -1,6 +1,20 @@
 const MAX_WIKI_CHARS = 28000;
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/free';
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const ACTIONS = Object.freeze({
+  VIDEO_SCENARIO: 'video_scenario',
+  LEGACY_SHORT_VIDEO: 'short_video',
+  FUNDING_TIMELINE: 'funding_timeline',
+  CRYPTO_LORE: 'crypto_lore'
+});
+
+// OpenRouter generates scenario JSON only. It never renders video.
+function buildVideoPipeline(scenarioProvider, scenarioModel) {
+  return {
+    scenario: { provider: scenarioProvider, model: scenarioModel, freeOnly: true },
+    video: { provider: null, model: null, configured: false, status: 'not_configured' }
+  };
+}
 
 export default async function handler(req, res) {
   setCors(res);
@@ -9,14 +23,17 @@ export default async function handler(req, res) {
 
   try {
     const body = await readBody(req);
-    const { action } = body || {};
+    const requestedAction = body?.action;
+    const action = requestedAction === ACTIONS.LEGACY_SHORT_VIDEO
+      ? ACTIONS.VIDEO_SCENARIO
+      : requestedAction;
 
     if (action === 'load_wiki') {
       const wiki = await loadWiki(body);
       return res.status(200).json({ wiki });
     }
 
-    if (!['short_video', 'funding_timeline', 'crypto_lore'].includes(action)) {
+    if (![ACTIONS.VIDEO_SCENARIO, ACTIONS.FUNDING_TIMELINE, ACTIONS.CRYPTO_LORE].includes(action)) {
       return res.status(400).json({ error: 'Invalid ability type.' });
     }
 
@@ -28,9 +45,12 @@ export default async function handler(req, res) {
     const localFallback = (reason) => res.status(200).json({
       result: buildLocalAbilityResult(action, wiki, reason),
       model: 'local-draft',
-      provider: 'Local fallback',
+      provider: 'local',
       fallbackReason: reason,
-      freeOnly: true
+      freeOnly: true,
+      pipeline: action === ACTIONS.VIDEO_SCENARIO
+        ? buildVideoPipeline('local', 'local-draft')
+        : undefined
     });
 
     if (!process.env.OPENROUTER_API_KEY) {
@@ -47,11 +67,21 @@ export default async function handler(req, res) {
     const prompt = buildPrompt(action, wiki);
     let result;
     try {
-      result = await callOpenRouter(prompt, action, req.headers.host, model);
+      result = action === ACTIONS.VIDEO_SCENARIO
+        ? await generateVideoScenarioWithOpenRouter(prompt, req.headers.host, model)
+        : await callOpenRouter(prompt, action, req.headers.host, model);
     } catch (error) {
       return localFallback(`OpenRouter free model unavailable or capped: ${error.message}`);
     }
-    return res.status(200).json({ result, model, provider: 'OpenRouter', freeOnly: true });
+    return res.status(200).json({
+      result,
+      model,
+      provider: 'openrouter',
+      freeOnly: true,
+      pipeline: action === ACTIONS.VIDEO_SCENARIO
+        ? buildVideoPipeline('openrouter', model)
+        : undefined
+    });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: error.message || 'Unexpected server error.' });
@@ -204,9 +234,11 @@ Loaded wiki text:
 ${wiki.rawText.slice(0, MAX_WIKI_CHARS)}
 `;
 
-  if (action === 'short_video') {
+  if (action === ACTIONS.VIDEO_SCENARIO) {
     return `${shared}
-Create a Short Video Studio output for an embedded 15-30 second vertical explainer.
+Create a scenario, script, and scene plan for a 15-30 second vertical explainer.
+Return planning JSON only. Do not claim or imply that a video was rendered.
+A separate video provider will consume this JSON after it is configured.
 Return JSON with this exact shape:
 {
   "hooks": ["5 hook options under 13 words each"],
@@ -232,7 +264,7 @@ Visual rules:
 - Every scene must directly visualize its source_fact.
 - Dates become timelines or events; numbers become metrics or comparisons; named entities and relationships become networks or person scenes; mechanisms and sequences become process diagrams.
 - Do not use generic stock imagery, decorative/random graphics, or transcript-like text screens.
-- Narration explains detail. The canvas uses diagrams, dates, values, names, and at most five caption words.`;
+- Narration explains detail. Visual directions must be topic-specific and useful to a future generative video model.`;
   }
 
   if (action === 'funding_timeline') {
@@ -282,6 +314,10 @@ Return JSON with this exact shape:
   throw new Error(`Unknown action: ${action}`);
 }
 
+async function generateVideoScenarioWithOpenRouter(prompt, host, model) {
+  return callOpenRouter(prompt, ACTIONS.VIDEO_SCENARIO, host, model);
+}
+
 async function callOpenRouter(prompt, action, host = '', model = getFreeOpenRouterModel()) {
   const response = await fetch(OPENROUTER_URL, {
     method: 'POST',
@@ -324,6 +360,7 @@ function getFreeOpenRouterModel() {
 
 function buildLocalAbilityResult(action, wiki, reason) {
   const builders = {
+    video_scenario: buildLocalShort,
     short_video: buildLocalShort,
     funding_timeline: buildLocalFunding,
     crypto_lore: buildLocalLore
