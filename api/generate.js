@@ -20,20 +20,38 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Invalid ability type.' });
     }
 
-    if (!process.env.OPENROUTER_API_KEY) {
-      return res.status(500).json({
-        error: 'OPENROUTER_API_KEY is missing. Add it to your serverless environment variables.'
-      });
-    }
-
     if (!body.wiki || !body.wiki.rawText || body.wiki.rawText.length < 180) {
       return res.status(400).json({ error: 'Loaded wiki text is missing or too short.' });
     }
 
     const wiki = normalizeWiki(body.wiki);
+    const localFallback = (reason) => res.status(200).json({
+      result: buildLocalAbilityResult(action, wiki, reason),
+      model: 'local-draft',
+      provider: 'Local fallback',
+      fallbackReason: reason,
+      freeOnly: true
+    });
+
+    if (!process.env.OPENROUTER_API_KEY) {
+      return localFallback('OPENROUTER_API_KEY is missing, so no paid AI call was made.');
+    }
+
+    let model;
+    try {
+      model = getFreeOpenRouterModel();
+    } catch (error) {
+      return localFallback(error.message);
+    }
+
     const prompt = buildPrompt(action, wiki);
-    const result = await callOpenRouter(prompt, action, req.headers.host);
-    return res.status(200).json({ result, model: DEFAULT_MODEL, provider: 'OpenRouter' });
+    let result;
+    try {
+      result = await callOpenRouter(prompt, action, req.headers.host, model);
+    } catch (error) {
+      return localFallback(`OpenRouter free model unavailable or capped: ${error.message}`);
+    }
+    return res.status(200).json({ result, model, provider: 'OpenRouter', freeOnly: true });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: error.message || 'Unexpected server error.' });
@@ -70,7 +88,7 @@ async function loadWiki({ url, manualText, sampleText, sampleTitle }) {
   try {
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'IQ.wiki Abilities Lab prototype/0.1',
+        'User-Agent': 'IQ.wiki Abilities Lab/1.0',
         'Accept': 'text/html,application/xhtml+xml'
       }
     });
@@ -106,7 +124,7 @@ function assertIqWikiUrl(rawUrl) {
   try { parsed = new URL(rawUrl); } catch { throw new Error('Invalid URL.'); }
   const hostname = parsed.hostname.toLowerCase();
   const allowed = hostname === 'iq.wiki' || hostname.endsWith('.iq.wiki');
-  if (!allowed) throw new Error('For this prototype, only iq.wiki URLs are allowed.');
+  if (!allowed) throw new Error('Only iq.wiki URLs are allowed.');
 }
 
 function extractTextFromHtml(html) {
@@ -165,7 +183,7 @@ function normalizeWiki(wiki) {
 
 function buildPrompt(action, wiki) {
   const shared = `
-You are generating IQ.wiki content modules for a lightweight product prototype.
+You are generating IQ.wiki content modules for an embedded production widget.
 
 CRITICAL RULES:
 - Use ONLY the loaded IQ.wiki text provided below.
@@ -173,6 +191,7 @@ CRITICAL RULES:
 - If a detail is missing, write "Not found in loaded wiki text" or create a clearly marked placeholder.
 - Keep outputs punchy and crypto-native, not generic encyclopedia copy.
 - Every output is an AI draft requiring editor review.
+- This is an embedded IQ.wiki experience, not a downloadable or exported MP4.
 - Return STRICT JSON only. No markdown fences. No commentary outside JSON.
 
 Loaded wiki title: ${wiki.title}
@@ -187,20 +206,33 @@ ${wiki.rawText.slice(0, MAX_WIKI_CHARS)}
 
   if (action === 'short_video') {
     return `${shared}
-Create a Short Video Studio output for TikTok/Reels/Shorts.
+Create a Short Video Studio output for an embedded 15-30 second vertical explainer.
 Return JSON with this exact shape:
 {
   "hooks": ["5 hook options under 13 words each"],
-  "voiceover": "A 25-35 second voiceover script. Factual, fast, slightly dramatic.",
+  "voiceover": "A 15-30 second voiceover script. Factual, fast, slightly dramatic.",
   "scenes": [
-    {"time":"0-3s", "visual":"visual direction", "caption":"on-screen caption", "voiceover":"line for this scene"}
+    {
+      "time":"0-3s",
+      "visual_type":"title|network|timeline|metric|comparison|process|person|event|end",
+      "visual":"specific visual direction",
+      "visual_data":{"primary":"main label","secondary":"context","value":"number if relevant","date":"date if relevant","items":[{"label":"short label","detail":"article fact"}]},
+      "caption":"maximum 5 words",
+      "voiceover":"line for this scene",
+      "source_fact":"specific loaded-wiki fact used"
+    }
   ],
-  "suggested_visuals": ["logos, wiki screenshots, charts, timelines, source screenshots, but no fabricated imagery"],
+  "suggested_visuals": ["article-derived entity maps, timelines, metrics, process diagrams, and the IQ.wiki source page"],
   "tiktok_caption": "caption with CTA",
   "x_caption": "caption with CTA",
   "cta": "short CTA back to IQ.wiki",
   "fact_check": ["specific facts from the script that need editor/source verification"]
-}`;
+}
+Visual rules:
+- Every scene must directly visualize its source_fact.
+- Dates become timelines or events; numbers become metrics or comparisons; named entities and relationships become networks or person scenes; mechanisms and sequences become process diagrams.
+- Do not use generic stock imagery, decorative/random graphics, or transcript-like text screens.
+- Narration explains detail. The canvas uses diagrams, dates, values, names, and at most five caption words.`;
   }
 
   if (action === 'funding_timeline') {
@@ -250,9 +282,10 @@ Return JSON with this exact shape:
   throw new Error(`Unknown action: ${action}`);
 }
 
-async function callOpenRouter(prompt, action, host = '') {
+async function callOpenRouter(prompt, action, host = '', model = getFreeOpenRouterModel()) {
   const response = await fetch(OPENROUTER_URL, {
     method: 'POST',
+    signal: AbortSignal.timeout(25000),
     headers: {
       'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
       'Content-Type': 'application/json',
@@ -260,7 +293,7 @@ async function callOpenRouter(prompt, action, host = '') {
       'X-Title': 'IQ.wiki Abilities Lab'
     },
     body: JSON.stringify({
-      model: DEFAULT_MODEL,
+      model,
       messages: [
         { role: 'system', content: 'Return valid JSON only. Follow the user instructions exactly.' },
         { role: 'user', content: prompt }
@@ -279,6 +312,140 @@ async function callOpenRouter(prompt, action, host = '') {
   const text = data?.choices?.[0]?.message?.content || '';
   if (!text) throw new Error('OpenRouter returned an empty response. Try again.');
   return parseJsonStrict(text);
+}
+
+function getFreeOpenRouterModel() {
+  const model = DEFAULT_MODEL.trim();
+  if (model !== 'openrouter/free' && !model.endsWith(':free')) {
+    throw new Error(`Configured OpenRouter model "${model}" is not free-only. Refusing paid fallback.`);
+  }
+  return model;
+}
+
+function buildLocalAbilityResult(action, wiki, reason) {
+  const builders = {
+    short_video: buildLocalShort,
+    funding_timeline: buildLocalFunding,
+    crypto_lore: buildLocalLore
+  };
+  return {
+    ...(builders[action] || buildLocalShort)(wiki),
+    _meta: { freeOnly: true, fallbackReason: reason, generatedBy: 'local-draft' }
+  };
+}
+
+function buildLocalShort(wiki) {
+  const facts = sentenceFacts(wiki.rawText);
+  const title = wiki.title || 'this wiki';
+  const dates = extractDates(wiki.rawText).slice(0, 3);
+  const money = extractMoney(wiki.rawText).slice(0, 2);
+  const names = extractNamedPhrases(wiki.rawText)
+    .filter((name) => name.toLowerCase() !== title.toLowerCase())
+    .slice(0, 4);
+  const fact = (index) => facts[index] || facts[0] || wiki.summary;
+  const itemize = (values, offset = 0) => values.map((value, index) => ({
+    label: shorten(value, 24),
+    detail: shorten(facts[index + offset] || value, 80)
+  }));
+  const scenes = [
+    {
+      time: '0-4s', visual_type: 'title', visual: `Introduce ${title} using its article identity`,
+      visual_data: { primary: title, secondary: shorten(fact(0), 70), items: [] },
+      caption: `What is ${shorten(title, 30)}?`, voiceover: shorten(fact(0), 150), source_fact: shorten(fact(0), 180)
+    },
+    {
+      time: '4-10s', visual_type: names.length ? 'network' : 'process',
+      visual: names.length ? `Map named entities connected to ${title}` : 'Diagram the article’s core idea',
+      visual_data: { primary: title, secondary: shorten(fact(1), 70), items: itemize(names.length ? names : facts.slice(1, 4), 1) },
+      caption: names.length ? 'The key connections' : 'How it works',
+      voiceover: shorten(fact(1), 150), source_fact: shorten(fact(1), 180)
+    },
+    {
+      time: '10-16s', visual_type: dates.length ? 'timeline' : 'process',
+      visual: dates.length ? 'Place article events on a dated timeline' : 'Show the next article-backed step',
+      visual_data: { primary: dates[0] || title, secondary: shorten(fact(2), 70), date: dates[0] || '', items: itemize(dates.length ? dates : facts.slice(2, 5), 2) },
+      caption: dates.length ? 'The timeline' : 'What changed',
+      voiceover: shorten(fact(2), 150), source_fact: shorten(fact(2), 180)
+    },
+    {
+      time: '16-22s', visual_type: money.length ? 'metric' : 'event',
+      visual: money.length ? 'Emphasize the article’s key value with context' : 'Visualize the article’s key event',
+      visual_data: { primary: title, secondary: shorten(fact(3), 70), value: money[0] || '', items: itemize(money, 3) },
+      caption: money.length ? 'The key number' : 'Why it matters',
+      voiceover: shorten(fact(3), 150), source_fact: shorten(fact(3), 180)
+    },
+    {
+      time: '22-28s', visual_type: 'end', visual: `Return to the ${title} IQ.wiki article`,
+      visual_data: { primary: title, secondary: 'Read the sourced article on IQ.wiki', items: [] },
+      caption: 'Explore the full wiki', voiceover: shorten(fact(4), 150), source_fact: shorten(fact(4), 180)
+    }
+  ];
+  return {
+    hooks: [`What most people miss about ${title}`, `${title}, explained in under 30 seconds`, `The fast version of ${title}`],
+    voiceover: scenes.map(scene => scene.voiceover).join(' '),
+    scenes,
+    suggested_visuals: ['Article-derived entity map', 'Article-derived timeline or metric', 'IQ.wiki source end card'],
+    tiktok_caption: `${title}, explained in under 30 seconds. Read the full wiki on IQ.wiki.`,
+    x_caption: `A fast visual guide to ${title}. Read the full source on IQ.wiki.`,
+    cta: 'Read the full wiki on IQ.wiki.',
+    fact_check: facts.slice(0, 5)
+  };
+}
+
+function buildLocalFunding(wiki) {
+  const dates = extractDates(wiki.rawText);
+  const money = extractMoney(wiki.rawText);
+  const facts = sentenceFacts(wiki.rawText);
+  const dateValues = dates.length ? dates.slice(0, 6) : ['Not found'];
+  return {
+    total_raised_found: money[0] || 'Not found in loaded wiki text',
+    token_sale_status: money.length ? 'partial' : 'not found',
+    confidence: 'Low - generated locally because free AI was unavailable.',
+    rows: dateValues.map((date, index) => ({
+      date,
+      type: money[index] ? 'Other' : 'Placeholder',
+      amount: money[index] || 'Not found',
+      valuation_or_price: 'Not found',
+      investors_or_platform: 'Not found',
+      source_status: facts[index] ? 'Found in loaded wiki text / local draft' : 'Placeholder for future enrichment'
+    })),
+    notes: 'Local draft extracting obvious dates and money mentions from the loaded wiki text.',
+    warnings: ['Editor review required before publishing.', 'No paid model was used.', 'Missing fields stay marked as not found.']
+  };
+}
+
+function buildLocalLore(wiki) {
+  const facts = sentenceFacts(wiki.rawText);
+  const dates = extractDates(wiki.rawText);
+  const money = extractMoney(wiki.rawText);
+  const people = extractNamedPhrases(wiki.rawText).slice(0, 8);
+  return {
+    dramatic_title: `The ${wiki.title} story`,
+    short_version: facts.slice(0, 3).join(' ') || wiki.summary,
+    why_it_mattered: facts[3] || facts[0] || 'Not found in loaded wiki text',
+    timeline: (dates.length ? dates : ['Not found']).slice(0, 5).map((date, index) => ({
+      date,
+      event: shorten(facts[index] || wiki.summary, 120),
+      context: 'Found in loaded wiki text / local draft'
+    })),
+    money_involved: money.length ? money : ['Not found in loaded wiki text'],
+    key_people_projects: people.length ? people : [wiki.title],
+    turning_point: facts[4] || facts[1] || 'Not found in loaded wiki text',
+    receipts_needed: ['Editor should verify wiki sources before publishing.'],
+    related_wikis: [wiki.url || 'Not found in loaded wiki text'],
+    cta: 'Read the full wiki on IQ.wiki.'
+  };
+}
+
+function sentenceFacts(text) {
+  const cleaned = cleanText(text).replace(/\s+/g, ' ');
+  const sentences = cleaned.match(/[^.!?]+[.!?]+/g) || [cleaned];
+  return [...new Set(sentences.map(sentence => shorten(sentence.trim(), 220)).filter(sentence => sentence.length > 35))].slice(0, 8);
+}
+
+function shorten(value, max = 160) {
+  const text = cleanText(value || '');
+  return text.length > max ? `${text.slice(0, max - 1).trim()}...` : text;
 }
 
 function parseJsonStrict(text) {
