@@ -8,8 +8,10 @@ import {
   createRateLimiter,
   extractModelContent,
   extractWikiText,
+  getFreeModelCandidates,
   parseStrictJson
 } from '../lib/foundation.js';
+import { callOpenRouter } from '../api/generate.js';
 
 test('accepts direct HTTPS IQ.wiki article URLs', () => {
   assert.equal(assertIqWikiUrl('https://iq.wiki/wiki/solana#history'), 'https://iq.wiki/wiki/solana');
@@ -24,6 +26,36 @@ test('blocks paid OpenRouter models', () => {
   assert.equal(assertFreeModel('openrouter/free'), 'openrouter/free');
   assert.equal(assertFreeModel('meta-llama/model:free'), 'meta-llama/model:free');
   assert.throws(() => assertFreeModel('google/gemini-pro'), /not free/);
+});
+
+test('builds a deduplicated free-only model list', () => {
+  assert.deepEqual(
+    getFreeModelCandidates('openrouter/free, openai/gpt-oss-20b:free', ['openrouter/free']),
+    ['openrouter/free', 'openai/gpt-oss-20b:free']
+  );
+  assert.throws(
+    () => getFreeModelCandidates('openrouter/free,google/gemini-pro'),
+    /not free/
+  );
+});
+
+test('fails over between free models without adding a paid model', async () => {
+  const calls = [];
+  const generated = await callOpenRouter('prompt', 'example.com', [
+    'openrouter/free',
+    'openai/gpt-oss-20b:free'
+  ], async (_prompt, _host, model) => {
+    calls.push(model);
+    if (model === 'openrouter/free') {
+      throw new AppError(429, 'FREE_MODEL_QUOTA', 'capacity', true);
+    }
+    return { voiceover: 'working' };
+  });
+  assert.deepEqual(calls, ['openrouter/free', 'openai/gpt-oss-20b:free']);
+  assert.deepEqual(generated, {
+    result: { voiceover: 'working' },
+    model: 'openai/gpt-oss-20b:free'
+  });
 });
 
 test('cache expires and rate limiter blocks excess requests', async () => {

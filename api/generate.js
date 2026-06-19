@@ -2,16 +2,21 @@ import { randomUUID } from 'node:crypto';
 import {
   AppError,
   TTLCache,
-  assertFreeModel,
   assertIqWikiUrl,
   createRateLimiter,
   extractModelContent,
   extractWikiText,
+  getFreeModelCandidates,
   parseStrictJson
 } from '../lib/foundation.js';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const MODEL = process.env.OPENROUTER_MODEL || 'openrouter/free';
+const DEFAULT_FREE_MODELS = [
+  'openrouter/free',
+  'qwen/qwen3-next-80b-a3b-instruct:free',
+  'openai/gpt-oss-20b:free',
+  'google/gemma-4-26b-a4b-it:free'
+];
 const wikiCache = new TTLCache(100);
 const resultCache = new TTLCache(100);
 const loadLimit = createRateLimiter({ limit: Number(process.env.LOAD_RATE_LIMIT || 20), windowMs: 300000 });
@@ -40,17 +45,18 @@ export default async function handler(req, res) {
     }
 
     const wiki = await loadWiki(body.url);
-    const model = assertFreeModel(MODEL);
+    const models = getConfiguredModels();
     if (!process.env.OPENROUTER_API_KEY) {
       throw new AppError(503, 'CONFIGURATION_ERROR', 'Free AI generation is not configured.');
     }
 
-    const cacheKey = JSON.stringify([action, wiki.url, body.options || {}, model]);
-    let result = resultCache.get(cacheKey);
-    if (!result) {
-      result = await callOpenRouter(buildPrompt(action, wiki, body.options || {}), req.headers.host, model);
-      resultCache.set(cacheKey, result, 900000);
+    const cacheKey = JSON.stringify([action, wiki.url, body.options || {}, models]);
+    let generated = resultCache.get(cacheKey);
+    if (!generated) {
+      generated = await callOpenRouter(buildPrompt(action, wiki, body.options || {}), req.headers.host, models);
+      resultCache.set(cacheKey, generated, 900000);
     }
+    const { result, model } = generated;
 
     log('request_complete', { requestId, action, status: 200, model, durationMs: Date.now() - startedAt });
     return res.status(200).json({
@@ -158,20 +164,45 @@ Visuals must depict article entities, products, events, places, timelines, metri
   return `${shared}\nReturn {"title":"story title","chapters":[{"heading":"short heading","body":"grounded story section","source_fact":"article fact"}],"cta":"short IQ.wiki CTA"}.`;
 }
 
-async function callOpenRouter(prompt, host, model) {
-  let invalidResponse;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      return await requestOpenRouter(prompt, host, model, attempt);
-    } catch (error) {
-      if (error.code !== 'INVALID_MODEL_RESPONSE' && error.code !== 'EMPTY_MODEL_RESPONSE') throw error;
-      invalidResponse = error;
-    }
-  }
-  throw invalidResponse;
+function getConfiguredModels() {
+  const configured = process.env.OPENROUTER_MODELS || process.env.OPENROUTER_MODEL;
+  const defaults = process.env.OPENROUTER_MODELS ? [] : DEFAULT_FREE_MODELS;
+  return getFreeModelCandidates(configured, defaults);
 }
 
-async function requestOpenRouter(prompt, host, model, attempt) {
+export async function callOpenRouter(prompt, host, models, request = requestOpenRouter) {
+  let lastError;
+  const deadline = Date.now() + 45000;
+  for (const model of models) {
+    const timeoutMs = Math.min(18000, deadline - Date.now());
+    if (timeoutMs < 1000) break;
+    try {
+      return { result: await request(prompt, host, model, timeoutMs), model };
+    } catch (error) {
+      if (!isFreeModelFailure(error)) throw error;
+      lastError = error;
+      log('free_model_failed', { model, code: error.code, status: error.status });
+    }
+  }
+  throw new AppError(
+    lastError?.status === 429 ? 429 : 503,
+    'FREE_MODELS_EXHAUSTED',
+    'Free AI capacity is full right now. No paid model was used. Try again later.',
+    true
+  );
+}
+
+function isFreeModelFailure(error) {
+  return [
+    'FREE_MODEL_QUOTA',
+    'FREE_MODEL_TIMEOUT',
+    'FREE_MODEL_UNAVAILABLE',
+    'INVALID_MODEL_RESPONSE',
+    'EMPTY_MODEL_RESPONSE'
+  ].includes(error.code);
+}
+
+async function requestOpenRouter(prompt, host, model, timeoutMs) {
   const response = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
@@ -190,10 +221,10 @@ async function requestOpenRouter(prompt, host, model, attempt) {
         { role: 'user', content: prompt }
       ],
       response_format: { type: 'json_object' },
-      temperature: attempt === 0 ? 0.3 : 0,
+      temperature: 0.2,
       max_tokens: 1800
     }),
-    signal: AbortSignal.timeout(attempt === 0 ? 25000 : 15000)
+    signal: AbortSignal.timeout(timeoutMs)
   }).catch((error) => {
     if (error.name === 'TimeoutError') throw new AppError(504, 'FREE_MODEL_TIMEOUT', 'The free model timed out.', true);
     throw new AppError(503, 'FREE_MODEL_UNAVAILABLE', 'The free model is unavailable.', true);
