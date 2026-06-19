@@ -44,6 +44,20 @@ test('extracts article text and parses fenced JSON', () => {
   assert.deepEqual(parseStrictJson('```json\n{"ok":true}\n```'), { ok: true });
 });
 
+test('uses the longest article region when the first main element is empty', () => {
+  const wiki = extractWikiText(`
+    <html>
+      <head><title>Solana - Cryptoassets | IQ.wiki</title></head>
+      <body>
+        <main></main>
+        <main><article><h1>Solana</h1><p>Solana is a blockchain network with readable article content.</p></article></main>
+      </body>
+    </html>
+  `);
+  assert.equal(wiki.title, 'Solana');
+  assert.match(wiki.rawText, /readable article content/);
+});
+
 test('normalizes free-provider response formats', () => {
   assert.deepEqual(parseStrictJson({ ok: true }), { ok: true });
   assert.equal(extractModelContent({
