@@ -6,6 +6,7 @@ import {
   assertFreeModel,
   assertIqWikiUrl,
   createRateLimiter,
+  extractModelContent,
   extractWikiText,
   parseStrictJson
 } from '../lib/foundation.js';
@@ -41,4 +42,13 @@ test('extracts article text and parses fenced JSON', () => {
   assert.equal(wiki.title, 'Solana');
   assert.match(wiki.rawText, /blockchain network/);
   assert.deepEqual(parseStrictJson('```json\n{"ok":true}\n```'), { ok: true });
+});
+
+test('normalizes free-provider response formats', () => {
+  assert.deepEqual(parseStrictJson({ ok: true }), { ok: true });
+  assert.equal(extractModelContent({
+    choices: [{ message: { content: [{ type: 'text', text: '{"ok":' }, { type: 'text', text: 'true}' }] } }]
+  }), '{"ok":true}');
+  assert.throws(() => parseStrictJson([]), /invalid data/);
+  assert.throws(() => extractModelContent({ choices: [] }), /no usable content/);
 });
