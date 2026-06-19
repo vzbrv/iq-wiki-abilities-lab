@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vercel dev",
-    "start": "vercel dev"
+    "start": "vercel dev",
+    "check": "node --check app.js && node --check api/generate.js && node --check lib/foundation.js",
+    "test": "node --test"
   },
   "dependencies": {},
   "devDependencies": {}
