@@ -44,6 +44,18 @@ test('extracts article text and parses fenced JSON', () => {
   assert.deepEqual(parseStrictJson('```json\n{"ok":true}\n```'), { ok: true });
 });
 
+test('recovers JSON from common free-model formatting mistakes', () => {
+  assert.deepEqual(
+    parseStrictJson('Here is the requested plan:\n```json\n{"ok":true,}\n```\nDone.'),
+    { ok: true }
+  );
+  assert.deepEqual(
+    parseStrictJson('Answer: {"text":"keep }, inside strings","items":[1,2,]}'),
+    { text: 'keep }, inside strings', items: [1, 2] }
+  );
+  assert.deepEqual(parseStrictJson('"{\\"ok\\":true}"'), { ok: true });
+});
+
 test('uses the longest article region when the first main element is empty', () => {
   const wiki = extractWikiText(`
     <html>
