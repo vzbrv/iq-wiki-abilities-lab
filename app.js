@@ -3,38 +3,32 @@ const samples = [
   {
     title: 'Nexus',
     subtitle: 'zkVM / verifiable computation project',
-    url: 'https://iq.wiki/wiki/nexus',
-    sampleText: `Nexus is a Layer 1 blockchain and zero-knowledge virtual machine network designed for verifiable computation. It was founded by Daniel Marin in 2022. Nexus Labs launched its mainnet in May 2026. The project is positioned around verifiable finance, AI agents, and scalable proofs. Useful sections may include history, technology, team, token, mainnet launch, and sources.`
+    url: 'https://iq.wiki/wiki/nexus'
   },
   {
     title: 'Terra',
     subtitle: 'algorithmic stablecoin lore',
-    url: 'https://iq.wiki/wiki/terra',
-    sampleText: `Terra is a blockchain protocol and payment platform used for algorithmic stablecoins. The blockchain project was created in 2018 by Terraform Labs, a startup co-founded by Do Kwon and Daniel Shin. It is known for Terra stablecoins and the associated LUNA reserve asset. In May 2022, TerraUSD lost its peg and LUNA collapsed, creating one of the most significant failures in crypto history.`
+    url: 'https://iq.wiki/wiki/terra'
   },
   {
     title: 'Do Kwon',
     subtitle: 'founder page with collapse/legal context',
-    url: 'https://iq.wiki/wiki/do-kwon',
-    sampleText: `Do Kwon is a South Korean entrepreneur and co-founder of Terraform Labs, known for TerraUSD and Luna. In May 2022, TerraUSD and Luna experienced a significant decline. In 2023, Do Kwon was arrested in Montenegro for allegedly using falsified documents. In 2024, Terraform Labs and Do Kwon reached a tentative settlement with the SEC related to the Terra collapse.`
+    url: 'https://iq.wiki/wiki/do-kwon'
   },
   {
     title: 'Daniel Marin',
     subtitle: 'founder profile',
-    url: 'https://iq.wiki/wiki/daniel-marin',
-    sampleText: `Daniel Marin is the founder and CEO of Nexus Labs, a Layer 1 blockchain and zero-knowledge virtual machine network. He studied computer science at Stanford and was an International Physics Olympiad medalist. Nexus was founded in 2022 and launched its mainnet in May 2026.`
+    url: 'https://iq.wiki/wiki/daniel-marin'
   },
   {
     title: 'Solana',
     subtitle: 'high-throughput L1',
-    url: 'https://iq.wiki/wiki/solana',
-    sampleText: `Solana is a high-performance Layer 1 blockchain founded by Anatoly Yakovenko. It is known for high throughput and low transaction costs. Solana experienced network outages and major market pressure after the FTX collapse but later saw renewed ecosystem activity through DeFi, NFTs, DePIN, and memecoins.`
+    url: 'https://iq.wiki/wiki/solana'
   },
   {
     title: 'Bittensor',
     subtitle: 'AI/crypto network',
-    url: 'https://iq.wiki/wiki/bittensor',
-    sampleText: `Bittensor is a decentralized machine learning network that uses blockchain incentives to coordinate AI model contributors. Its token TAO is used for rewards and participation in subnet markets. The project became one of the most visible AI and crypto networks during the rise of decentralized AI narratives.`
+    url: 'https://iq.wiki/wiki/bittensor'
   }
 ];
 
@@ -101,18 +95,12 @@ function attachEvents() {
     await loadWiki({ url });
   });
 
-  $('loadManualBtn').addEventListener('click', async () => {
-    const text = $('manualText').value.trim();
-    if (!text) return showStatus('Paste wiki text first.', true);
-    await loadWiki({ manualText: text, url: $('wikiUrl').value.trim() || '' });
-  });
-
   $('sampleGrid').addEventListener('click', async (event) => {
     const card = event.target.closest('[data-sample-index]');
     if (!card) return;
     const sample = samples[Number(card.dataset.sampleIndex)];
     $('wikiUrl').value = sample.url;
-    await loadWiki({ url: sample.url, sampleText: sample.sampleText, sampleTitle: sample.title });
+    await loadWiki({ url: sample.url });
   });
 
   $('resetBtn').addEventListener('click', () => {
@@ -173,22 +161,14 @@ async function loadWiki(payload) {
   showStatus('Loading wiki content…');
   setLoading(true);
   try {
-    let wiki;
-    try {
-      const response = await fetch(apiUrl(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'load_wiki', ...payload })
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Failed to load wiki');
-      wiki = data.wiki;
-    } catch (error) {
-      if (!payload.sampleText && !payload.manualText) throw error;
-      wiki = buildLocalWiki(payload);
-      wiki.loadMode = payload.manualText ? 'manual text' : 'sample fallback';
-      wiki.loadNote = 'Server fetch failed, so the app used local sample/manual text.';
-    }
+    const response = await fetch(apiUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'load_wiki', ...payload })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Failed to load wiki');
+    const wiki = data.wiki;
 
     state.wiki = wiki;
     state.outputs = {};
@@ -200,34 +180,16 @@ async function loadWiki(payload) {
     setTimeout(() => hideStatus(), 1600);
     window.scrollTo({ top: workspace.offsetTop - 90, behavior: 'smooth' });
   } catch (error) {
-    showStatus(`${error.message}. Use manual paste fallback or sample data.`, true);
+    showStatus(error.message, true);
   } finally {
     setLoading(false);
   }
 }
 
-function buildLocalWiki(payload) {
-  const rawText = payload.manualText || payload.sampleText || '';
-  const title = payload.sampleTitle || guessTitle(rawText) || 'Manual Wiki Text';
-  return {
-    title,
-    url: payload.url || '',
-    summary: rawText.slice(0, 280),
-    rawText,
-    sections: [{ heading: 'Article text', text: rawText }],
-    dates: extractDates(rawText),
-    moneyMentions: extractMoney(rawText),
-    peopleMentions: [],
-    projectMentions: [],
-    sourceMentions: [],
-    loadMode: payload.manualText ? 'manual text' : 'sample data'
-  };
-}
-
 function renderWikiSummary() {
   const wiki = state.wiki;
   $('wikiTitle').textContent = wiki.title || 'Loaded wiki';
-  $('wikiSource').textContent = wiki.url || 'Manual / sample content';
+  $('wikiSource').textContent = wiki.url;
   $('wikiSource').href = wiki.url || '#';
   $('wikiSummaryText').textContent = wiki.summary || wiki.rawText?.slice(0, 260) || 'No summary extracted yet.';
   const badges = [
@@ -261,7 +223,7 @@ async function generateCurrentAbility() {
     const response = await fetch(apiUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: ability.action, wiki: state.wiki })
+      body: JSON.stringify({ action: ability.action, url: state.wiki.url })
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'AI generation failed');
@@ -271,23 +233,18 @@ async function generateCurrentAbility() {
         provider: data.provider,
         model: data.model,
         freeOnly: data.freeOnly,
-        fallbackReason: data.fallbackReason,
         pipeline: data.pipeline
       }
     };
     renderOutput();
     showStatus(state.activeTab === 'short'
-      ? data.provider === 'openrouter'
-        ? 'Scenario generated with OpenRouter Free. Video provider is not connected.'
-        : 'Scenario generated locally. No paid model was used; video provider is not connected.'
-      : data.provider === 'openrouter'
-        ? 'Generated with a free AI model.'
-        : 'Generated locally at no cost.');
+      ? 'Scenario generated with OpenRouter Free. Video provider is not connected.'
+      : 'Generated with an approved free OpenRouter model.');
     setTimeout(() => hideStatus(), 1800);
   } catch (error) {
-    state.outputs[state.activeTab] = buildBrowserFallback(state.activeTab, state.wiki, error.message);
+    state.outputs[state.activeTab] = null;
     renderOutput();
-    showStatus('Free AI unavailable. Generated locally without switching to a paid model.');
+    showStatus(error.message, true);
   } finally {
     $('generateBtn').disabled = false;
   }
@@ -325,11 +282,11 @@ function renderShort(data) {
         <button class="video-play" data-play-video type="button" aria-label="Preview scenario with browser narration">▶</button>
       </div>
       <div class="card">
-        <span class="badge good">${delivery.provider === 'openrouter' ? 'Scenario: OpenRouter Free' : 'Scenario: local fallback'}</span>
+        <span class="badge good">Scenario: OpenRouter Free</span>
         <span class="badge warn">Video model: not connected</span>
         <h4>15–30 second video scenario</h4>
         <p>${escapeHtml(data.voiceover || '')}</p>
-        <p>${delivery.provider === 'openrouter' ? 'OpenRouter generated the script and scene plan only.' : 'The local fallback generated the script and scene plan only.'} No video model was called.</p>
+        <p>OpenRouter generated the script and scene plan only. No video model was called.</p>
         <button class="primary-btn" data-play-video type="button">Preview scenario</button>
         <button class="secondary-btn" type="button" disabled title="Connect a separate video provider and API key to enable">Generate AI video</button>
         ${actionButtons(data.voiceover || '')}
@@ -565,87 +522,6 @@ function wrapCanvasText(context, text, x, y, maxWidth, lineHeight, maxLines = 4,
   if (line && row < maxLines) context.fillText(line.trim(), x, y + row * lineHeight);
 }
 
-function buildBrowserFallback(tab, wiki, reason) {
-  const text = wiki.rawText || wiki.summary || '';
-  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
-  const clean = sentences.map(sentence => sentence.trim()).filter(Boolean);
-  const delivery = {
-    provider: 'browser-local',
-    model: 'local-draft',
-    freeOnly: true,
-    fallbackReason: reason
-  };
-
-  if (tab === 'short') {
-    delivery.pipeline = {
-      scenario: { provider: 'local', model: 'local-draft', freeOnly: true },
-      video: { provider: null, model: null, configured: false, status: 'not_configured' }
-    };
-  }
-
-  if (tab === 'short') {
-    const voiceover = clean.slice(0, 4).join(' ').slice(0, 430);
-    const dates = (wiki.dates || extractDates(text)).slice(0, 3);
-    const money = (wiki.moneyMentions || extractMoney(text)).slice(0, 2);
-    const names = extractClientNames(text, wiki.title).slice(0, 4);
-    const fact = index => clean[index] || clean[0] || wiki.summary || '';
-    const items = values => values.map((value, index) => ({ label: value, detail: fact(index + 1) }));
-    return {
-      hooks: [`${wiki.title} in 30 seconds`, `Why ${wiki.title} matters`, `The quick guide to ${wiki.title}`],
-      voiceover,
-      scenes: [
-        { time: '0-4s', visual_type: 'title', visual: wiki.title, visual_data: { primary: wiki.title, secondary: fact(0), items: [] }, caption: `What is ${wiki.title}?`, source_fact: fact(0) },
-        { time: '4-10s', visual_type: names.length ? 'network' : 'process', visual: 'Article relationships', visual_data: { primary: wiki.title, secondary: fact(1), items: items(names.length ? names : clean.slice(1, 4)) }, caption: 'The key connections', source_fact: fact(1) },
-        { time: '10-16s', visual_type: dates.length ? 'timeline' : 'process', visual: 'Article timeline', visual_data: { primary: wiki.title, secondary: fact(2), date: dates[0] || '', items: items(dates.length ? dates : clean.slice(2, 5)) }, caption: dates.length ? 'The timeline' : 'How it works', source_fact: fact(2) },
-        { time: '16-22s', visual_type: money.length ? 'metric' : 'event', visual: 'Key article fact', visual_data: { primary: wiki.title, secondary: fact(3), value: money[0] || '', items: items(money) }, caption: money.length ? 'The key number' : 'Why it matters', source_fact: fact(3) },
-        { time: '22-28s', visual_type: 'end', visual: wiki.title, visual_data: { primary: wiki.title, secondary: 'Read the sourced article on IQ.wiki', items: [] }, caption: 'Explore the full wiki', source_fact: fact(4) }
-      ],
-      suggested_visuals: ['Article-derived entity map', 'Article-derived timeline or metric', 'IQ.wiki source end card'],
-      tiktok_caption: `${wiki.title}, explained quickly. Read the full article on IQ.wiki.`,
-      x_caption: `${wiki.title} in under 30 seconds. Full context on IQ.wiki.`,
-      fact_check: ['Compare every scene with the loaded wiki text.'],
-      _delivery: delivery
-    };
-  }
-
-  if (tab === 'funding') {
-    return {
-      total_raised_found: wiki.moneyMentions?.join(', ') || 'Not found in loaded wiki text',
-      token_sale_status: wiki.moneyMentions?.length ? 'Mentions found; review required' : 'Not found',
-      confidence: 'Editor review',
-      rows: [{
-        date: wiki.dates?.[0] || 'Not found',
-        type: 'Funding or token sale',
-        amount: wiki.moneyMentions?.[0] || 'Not found in loaded wiki text',
-        valuation_or_price: 'Not found in loaded wiki text',
-        investors_or_platform: 'Not found in loaded wiki text',
-        source_status: 'Editor review required'
-      }],
-      notes: 'Generated locally from literal date and money mentions.',
-      warnings: ['No paid enrichment source was used.'],
-      _delivery: delivery
-    };
-  }
-
-  return {
-    dramatic_title: `The ${wiki.title} Story`,
-    short_version: clean.slice(0, 3).join(' '),
-    why_it_mattered: clean[3] || clean[1] || clean[0] || '',
-    timeline: (wiki.dates || []).map(date => ({
-      date,
-      event: clean.find(sentence => sentence.includes(date)) || `Event mentioned in ${date}`,
-      context: 'From loaded wiki text'
-    })),
-    money_involved: wiki.moneyMentions?.length ? wiki.moneyMentions : ['No amount found in loaded wiki text'],
-    key_people_projects: [wiki.title],
-    turning_point: clean.slice(-2).join(' '),
-    receipts_needed: ['Review against the original IQ.wiki article and sources.'],
-    related_wikis: [],
-    cta: 'Read the full article on IQ.wiki.',
-    _delivery: delivery
-  };
-}
-
 function renderFunding(data) {
   const rows = Array.isArray(data.rows) ? data.rows : [];
   const warnings = data.warnings || [];
@@ -784,22 +660,6 @@ function modalContent(kind) {
   return blocks[kind] || blocks.architecture;
 }
 
-function guessTitle(text) {
-  const firstLine = text.split('\n').find(Boolean) || '';
-  return firstLine.replace(/^#+\s*/, '').slice(0, 70);
-}
-function extractDates(text) {
-  return [...new Set((text.match(/\b(?:19|20)\d{2}\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+(?:19|20)\d{2}\b/gi) || []).slice(0, 10))];
-}
-function extractMoney(text) {
-  return [...new Set((text.match(/\$\s?\d+(?:\.\d+)?\s?(?:k|m|b|million|billion)?|\d+(?:\.\d+)?\s?(?:million|billion)\s?(?:USD|dollars)?/gi) || []).slice(0, 10))];
-}
-function extractClientNames(text, title) {
-  const blocked = new Set(['The', 'This', 'That', 'These', 'It', 'In', 'On', 'As', 'A', 'An']);
-  const matches = String(text).match(/\b[A-Z][A-Za-z0-9.-]+(?:\s+(?:[A-Z][A-Za-z0-9.-]+|of|the|and)){0,3}\b/g) || [];
-  return [...new Set(matches.map(value => value.trim()))]
-    .filter(value => value !== title && !blocked.has(value) && value.length > 2);
-}
 function escapeHtml(value = '') {
   return String(value)
     .replaceAll('&', '&amp;')
