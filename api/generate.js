@@ -5,6 +5,7 @@ import {
   assertFreeModel,
   assertIqWikiUrl,
   createRateLimiter,
+  extractModelContent,
   extractWikiText,
   parseStrictJson
 } from '../lib/foundation.js';
@@ -184,10 +185,18 @@ async function callOpenRouter(prompt, host, model) {
       : 'No approved free model is currently available.';
     throw new AppError(response.status === 429 ? 429 : 503, code, message, true);
   }
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new AppError(502, 'EMPTY_MODEL_RESPONSE', 'The free model returned no content.', true);
-  return parseStrictJson(content);
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new AppError(
+      502,
+      'INVALID_MODEL_RESPONSE',
+      'The free model returned unreadable data. Try again.',
+      true
+    );
+  }
+  return parseStrictJson(extractModelContent(data));
 }
 
 function enforceRateLimit(result) {

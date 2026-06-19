@@ -116,6 +116,8 @@ function errorMessage(error) {
     FREE_MODEL_QUOTA: 'Free AI capacity is full right now. No paid model was used. Try again later.',
     FREE_MODEL_UNAVAILABLE: 'No approved free AI model is available right now. No paid fallback was used.',
     FREE_MODEL_TIMEOUT: 'The free AI model took too long to respond. Try again.',
+    EMPTY_MODEL_RESPONSE: 'The free AI model returned no usable answer. No paid fallback was used. Try again.',
+    INVALID_MODEL_RESPONSE: 'The free AI model returned an unusable answer. No paid fallback was used. Try again.',
     WIKI_TIMEOUT: 'IQ.wiki took too long to respond. Try again.',
     WIKI_UNAVAILABLE: 'That IQ.wiki article could not be loaded.',
     INVALID_WIKI_URL: 'Enter a direct IQ.wiki article URL, such as https://iq.wiki/wiki/solana.',
