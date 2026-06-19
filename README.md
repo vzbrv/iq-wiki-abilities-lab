@@ -21,11 +21,15 @@ OPENROUTER_API_KEY=... npm run dev
 Optional settings:
 
 ```bash
-OPENROUTER_MODEL=openrouter/free
+# Full ordered allowlist. Every entry must be openrouter/free or end in :free.
+OPENROUTER_MODELS=openrouter/free,openai/gpt-oss-20b:free
 ALLOWED_ORIGINS=https://your-site.example
 LOAD_RATE_LIMIT=20
 GENERATE_RATE_LIMIT=8
 ```
+
+If `OPENROUTER_MODELS` is unset, the app tries the legacy `OPENROUTER_MODEL`
+first, then its built-in free-only fallback list. It never attempts a paid model.
 
 Use `?embed=1` for the compact embedded layout. Use `?api=https://api.example` only when the static frontend and API are hosted separately.
 

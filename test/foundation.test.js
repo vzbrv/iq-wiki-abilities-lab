@@ -8,11 +8,16 @@ import {
   createRateLimiter,
   extractModelContent,
   extractWikiText,
+  getFreeModelCandidates,
   parseStrictJson
 } from '../lib/foundation.js';
+import { callOpenRouter, validateGeneratedResult } from '../api/generate.js';
 
 test('accepts direct HTTPS IQ.wiki article URLs', () => {
-  assert.equal(assertIqWikiUrl('https://iq.wiki/wiki/solana#history'), 'https://iq.wiki/wiki/solana');
+  assert.equal(
+    assertIqWikiUrl('https://iq.wiki/wiki/solana?utm_source=test#history'),
+    'https://iq.wiki/wiki/solana'
+  );
 });
 
 test('rejects non-IQ.wiki and non-article URLs', () => {
@@ -26,6 +31,36 @@ test('blocks paid OpenRouter models', () => {
   assert.throws(() => assertFreeModel('google/gemini-pro'), /not free/);
 });
 
+test('builds a deduplicated free-only model list', () => {
+  assert.deepEqual(
+    getFreeModelCandidates('openrouter/free, openai/gpt-oss-20b:free', ['openrouter/free']),
+    ['openrouter/free', 'openai/gpt-oss-20b:free']
+  );
+  assert.throws(
+    () => getFreeModelCandidates('openrouter/free,google/gemini-pro'),
+    /not free/
+  );
+});
+
+test('fails over between free models without adding a paid model', async () => {
+  const calls = [];
+  const generated = await callOpenRouter('prompt', 'example.com', [
+    'openrouter/free',
+    'openai/gpt-oss-20b:free'
+  ], async (_prompt, _host, model) => {
+    calls.push(model);
+    if (model === 'openrouter/free') {
+      throw new AppError(429, 'FREE_MODEL_QUOTA', 'capacity', true);
+    }
+    return { voiceover: 'working' };
+  });
+  assert.deepEqual(calls, ['openrouter/free', 'openai/gpt-oss-20b:free']);
+  assert.deepEqual(generated, {
+    result: { voiceover: 'working' },
+    model: 'openai/gpt-oss-20b:free'
+  });
+});
+
 test('cache expires and rate limiter blocks excess requests', async () => {
   const cache = new TTLCache();
   cache.set('key', 'value', 5);
@@ -35,6 +70,65 @@ test('cache expires and rate limiter blocks excess requests', async () => {
   const limit = createRateLimiter({ limit: 1, windowMs: 1000 });
   assert.equal(limit('client').allowed, true);
   assert.equal(limit('client').allowed, false);
+});
+
+test('updating a full cache does not evict another entry', () => {
+  const cache = new TTLCache(2);
+  cache.set('first', 1, 1000);
+  cache.set('second', 2, 1000);
+  cache.set('first', 3, 1000);
+  assert.equal(cache.get('first'), 3);
+  assert.equal(cache.get('second'), 2);
+});
+
+test('validates complete grounded video plans', () => {
+  const plan = validateGeneratedResult('video_scenario', {
+    hooks: ['Hook'],
+    voiceover: 'Narration',
+    scenes: [{
+      time: '0-3s',
+      visual: 'Show the protocol interface',
+      caption: 'Protocol launch',
+      voiceover: 'Scene narration',
+      source_fact: 'The article says the protocol launched.'
+    }],
+    cta: 'Read more'
+  });
+  assert.equal(plan.scenes[0].visual, 'Show the protocol interface');
+  assert.throws(
+    () => validateGeneratedResult('video_scenario', {
+      hooks: 'Hook',
+      voiceover: 'Narration',
+      scenes: []
+    }),
+    /incomplete answer/
+  );
+});
+
+test('fails over when a free model returns the wrong result shape', async () => {
+  const calls = [];
+  const generated = await callOpenRouter(
+    'prompt',
+    'example.com',
+    ['openrouter/free', 'openai/gpt-oss-20b:free'],
+    async (_prompt, _host, model) => {
+      calls.push(model);
+      return model === 'openrouter/free'
+        ? { voiceover: 'missing scenes' }
+        : {
+            hooks: ['Hook'],
+            voiceover: 'Narration',
+            scenes: [{
+              visual: 'Topic visual',
+              voiceover: 'Scene narration',
+              source_fact: 'Article fact'
+            }]
+          };
+    },
+    (value) => validateGeneratedResult('video_scenario', value)
+  );
+  assert.deepEqual(calls, ['openrouter/free', 'openai/gpt-oss-20b:free']);
+  assert.equal(generated.model, 'openai/gpt-oss-20b:free');
 });
 
 test('extracts article text and parses fenced JSON', () => {
