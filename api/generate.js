@@ -54,6 +54,7 @@ export default async function handler(req, res) {
     log('request_complete', { requestId, action, status: 200, model, durationMs: Date.now() - startedAt });
     return res.status(200).json({
       result,
+      article: { title: wiki.title, url: wiki.url, summary: wiki.summary },
       model,
       provider: 'openrouter',
       freeOnly: true,

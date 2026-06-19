@@ -1,128 +1,123 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>IQ.wiki Abilities Lab</title>
-  <meta name="description" content="Paste an IQ.wiki link and generate AI-powered video scenarios, funding timelines, and crypto lore widgets.">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;650;750;850;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
-</head>
-<body>
-  <div class="bg-orb orb-one"></div>
-  <div class="bg-orb orb-two"></div>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Turn an IQ.wiki article into a grounded short-video script and visual production plan.">
+    <title>IQ.wiki Video Studio</title>
+    <link rel="icon" href="https://iq.wiki/favicon.ico">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="https://iq.wiki" target="_blank" rel="noreferrer">
+        <img src="https://iq.wiki/favicon.ico" alt="" width="28" height="28">
+        <span>IQ.wiki</span>
+      </a>
+      <a class="header-link" href="https://iq.wiki" target="_blank" rel="noreferrer">Explore IQ.wiki</a>
+    </header>
 
-  <header class="site-header">
-    <a class="brand" href="#top" aria-label="IQ.wiki Abilities Lab home">
-      <span class="brand-mark">IQ</span>
-      <span><strong>IQ.wiki Abilities Lab</strong><small>scenario AI · free-only · widget-ready</small></span>
-    </a>
-    <nav class="top-nav" aria-label="Top navigation">
-      <a href="#loader">Load wiki</a>
-      <a href="#workspace">Abilities</a>
-      <button class="ghost-btn small" data-open-modal="architecture">How it works</button>
-    </nav>
-  </header>
-
-  <main id="top">
-    <section id="loader" class="hero panel">
-      <div class="hero-copy">
-        <span class="eyebrow">Working standalone · ready to embed</span>
-        <h1>Turn any IQ.wiki page into AI-powered content modules.</h1>
-        <p>Paste a real IQ.wiki link or choose a sample article. OpenRouter Free generates video scenarios, funding timelines, and crypto lore from the live page. Generative video uses a separate provider only after its own API key is configured.</p>
-        <div class="pill-row">
-          <span class="pill">Short Video Studio</span>
-          <span class="pill">Funding Timeline</span>
-          <span class="pill">Crypto Lore</span>
-          <span class="pill">Free-only production mode</span>
-        </div>
-      </div>
-
-      <div class="loader-card">
-        <label for="wikiUrl">IQ.wiki URL</label>
-        <div class="input-row">
-          <input id="wikiUrl" type="url" placeholder="https://iq.wiki/wiki/nexus" autocomplete="off">
-          <button id="loadUrlBtn" class="primary-btn">Load wiki</button>
-        </div>
-
-        <details class="advanced-box">
-          <summary>Using GitHub Pages + separate Worker?</summary>
-          <label for="apiEndpoint">API endpoint base URL</label>
-          <div class="input-row">
-            <input id="apiEndpoint" type="url" placeholder="https://your-worker.yourname.workers.dev">
-            <button id="saveEndpointBtn" class="secondary-btn">Save</button>
-          </div>
-          <p>Leave blank for same-origin deploys like Vercel or Cloudflare Pages Functions.</p>
-        </details>
-
-        <div class="divider"><span>or choose a sample</span></div>
-        <div id="sampleGrid" class="sample-grid" aria-label="Sample wikis"></div>
-
-      </div>
-    </section>
-
-    <section id="workspace" class="workspace hidden">
-      <aside class="wiki-summary panel">
-        <div class="summary-top">
-          <span class="eyebrow">Loaded wiki</span>
-          <button id="resetBtn" class="ghost-btn small">Change</button>
-        </div>
-        <h2 id="wikiTitle">Wiki title</h2>
-        <a id="wikiSource" target="_blank" rel="noopener noreferrer">Source</a>
-        <p id="wikiSummaryText" class="muted"></p>
-        <div id="wikiBadges" class="pill-row"></div>
-        <div class="source-box">
-          <strong>Free-only rule</strong>
-          <p>AI can only use the loaded wiki text. If funding data is not present, the app shows placeholders instead of inventing facts.</p>
-          <strong>Separate video provider</strong>
-          <p>OpenRouter generates the scenario only. Generative video stays disabled until its own provider, model, and API key are configured.</p>
-        </div>
-      </aside>
-
-      <section class="lab-panel panel">
-        <div class="tabs" role="tablist" aria-label="AI abilities">
-          <button class="tab active" data-tab="short" role="tab">Short Video Studio</button>
-          <button class="tab" data-tab="funding" role="tab">Funding & Token Sale</button>
-          <button class="tab" data-tab="lore" role="tab">Crypto Lore</button>
-        </div>
-
-        <div class="tab-toolbar">
-          <div>
-            <span id="activeAbilityLabel" class="eyebrow">Short Video Studio</span>
-            <h3 id="activeAbilityTitle">Generate a 15–30 second video scenario from this wiki</h3>
-          </div>
-          <div class="toolbar-actions">
-            <button id="widgetToggle" class="secondary-btn" aria-pressed="false">Widget preview</button>
-            <button id="generateBtn" class="primary-btn">Generate script &amp; scenes</button>
-          </div>
-        </div>
-
-        <div id="status" class="status hidden" role="status"></div>
-        <div id="output" class="output-grid"></div>
+    <main>
+      <section class="intro-copy" aria-labelledby="page-title">
+        <p class="eyebrow">SHORT VIDEO STUDIO</p>
+        <h1 id="page-title">Explain any IQ.wiki page in 15–30 seconds</h1>
+        <p>Generate a source-grounded script, narration, and topic-specific scene plan in one click.</p>
       </section>
-    </section>
-  </main>
 
-  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
-    <div class="modal-card">
-      <button id="closeModal" class="close-btn" aria-label="Close modal">×</button>
-      <h3 id="modalTitle"></h3>
-      <div id="modalBody"></div>
-    </div>
-  </div>
-
-  <template id="loadingTemplate">
-    <div class="loading-card">
-      <div class="spinner"></div>
-      <div>
-        <strong>Generating scenario or content...</strong>
-        <p>OpenRouter is used for planning and text only. No video model is called.</p>
+      <div class="provider-strip" role="note">
+        <span><i class="status-dot ready"></i> Script and plan: free OpenRouter models only</span>
+        <span><i class="status-dot waiting"></i> Video rendering: separate engine, not connected</span>
       </div>
-    </div>
-  </template>
 
-  <script src="app.js"></script>
-</body>
+      <section class="studio-grid" aria-label="Video studio">
+        <form id="studioForm" class="setup-panel">
+          <div>
+            <p class="step-label">1. IQ.WIKI PAGE</p>
+            <label for="wikiUrl">Article URL</label>
+            <input id="wikiUrl" name="wikiUrl" type="url" required
+              placeholder="https://iq.wiki/wiki/solana"
+              autocomplete="url" spellcheck="false">
+            <div class="sample-list" aria-label="Example articles">
+              <button type="button" class="sample" data-url="https://iq.wiki/wiki/solana">Solana</button>
+              <button type="button" class="sample" data-url="https://iq.wiki/wiki/bittensor">Bittensor</button>
+              <button type="button" class="sample" data-url="https://iq.wiki/wiki/nexus">Nexus</button>
+            </div>
+          </div>
+
+          <fieldset>
+            <legend><span class="step-label">2. DURATION</span></legend>
+            <div class="segmented">
+              <label><input type="radio" name="duration" value="15"><span>15 sec</span></label>
+              <label><input type="radio" name="duration" value="20" checked><span>20 sec</span></label>
+              <label><input type="radio" name="duration" value="30"><span>30 sec</span></label>
+            </div>
+          </fieldset>
+
+          <div>
+            <label for="style"><span class="step-label">3. STYLE</span></label>
+            <select id="style" name="style">
+              <option value="documentary">Documentary</option>
+              <option value="cinematic">Cinematic</option>
+              <option value="technical">Technical</option>
+              <option value="social">Fast social</option>
+            </select>
+          </div>
+
+          <button id="generatePlanBtn" class="primary-button" type="submit">
+            <span class="button-label">Create script &amp; scene plan</span>
+            <span class="spinner" aria-hidden="true"></span>
+          </button>
+          <p class="privacy-note">Only the public article URL is sent. No paid AI fallback is allowed.</p>
+        </form>
+
+        <section id="outputPanel" class="output-panel" aria-live="polite" aria-busy="false">
+          <div id="emptyState" class="empty-state">
+            <div class="play-mark" aria-hidden="true">▶</div>
+            <h2>Your production plan will appear here</h2>
+            <p>It will include a complete narration and scene-by-scene visual directions grounded in the article.</p>
+          </div>
+
+          <div id="status" class="message" hidden role="status"></div>
+
+          <article id="result" hidden>
+            <header class="result-header">
+              <div>
+                <p class="step-label">SOURCE ARTICLE</p>
+                <h2 id="articleTitle"></h2>
+                <a id="articleLink" target="_blank" rel="noreferrer">View on IQ.wiki</a>
+              </div>
+              <span id="modelBadge" class="model-badge"></span>
+            </header>
+            <p id="articleSummary" class="article-summary"></p>
+
+            <section class="result-section">
+              <h3>Narration</h3>
+              <p id="voiceover" class="voiceover"></p>
+            </section>
+
+            <section class="result-section">
+              <h3>Opening hooks</h3>
+              <div id="hooks" class="hook-list"></div>
+            </section>
+
+            <section class="result-section">
+              <h3>Scene plan</h3>
+              <div id="scenes" class="scene-list"></div>
+            </section>
+
+            <button class="video-button" type="button" disabled>
+              <span aria-hidden="true">▶</span> Video engine coming soon
+            </button>
+            <p class="engine-note">Rendering will use a separate, explicitly configured video provider. It will never use a paid fallback.</p>
+          </article>
+        </section>
+      </section>
+    </main>
+
+    <footer>Built for IQ.wiki · AI output should be checked against the linked source.</footer>
+    <script type="module" src="./app.js"></script>
+  </body>
 </html>
