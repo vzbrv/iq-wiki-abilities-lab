@@ -20,6 +20,8 @@ form.addEventListener('submit', async (event) => {
   event.preventDefault();
   setLoading(true);
   showStatus('Loading the IQ.wiki article and asking a free AI model…', 'loading');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60000);
 
   try {
     const response = await fetch(`${apiBase}/api/generate`, {
@@ -32,14 +34,19 @@ form.addEventListener('submit', async (event) => {
           duration: Number(new FormData(form).get('duration')),
           style: form.style.value
         }
-      })
+      }),
+      signal: controller.signal
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new StudioError(data.code, data.error, data.requestId);
     renderResult(data);
   } catch (error) {
+    if (error?.name === 'AbortError') {
+      error = new StudioError('REQUEST_TIMEOUT', 'The request took too long.');
+    }
     showStatus(errorMessage(error), 'error');
   } finally {
+    clearTimeout(timeout);
     setLoading(false);
   }
 });
@@ -47,6 +54,9 @@ form.addEventListener('submit', async (event) => {
 function renderResult(data) {
   const plan = data.result || {};
   const article = data.article || {};
+  if (!Array.isArray(plan.hooks) || !Array.isArray(plan.scenes) || !plan.voiceover) {
+    throw new StudioError('INVALID_MODEL_RESPONSE', 'The free AI model returned an incomplete answer.');
+  }
   document.querySelector('#articleTitle').textContent = article.title || 'IQ.wiki article';
   document.querySelector('#articleLink').href = article.url || form.wikiUrl.value;
   document.querySelector('#articleSummary').textContent = article.summary || '';
@@ -116,8 +126,10 @@ function errorMessage(error) {
     FREE_MODEL_QUOTA: 'Free AI capacity is full right now. No paid model was used. Try again later.',
     FREE_MODEL_UNAVAILABLE: 'No approved free AI model is available right now. No paid fallback was used.',
     FREE_MODEL_TIMEOUT: 'The free AI model took too long to respond. Try again.',
+    FREE_MODELS_EXHAUSTED: 'Free AI capacity is full right now. No paid model was used. Try again later.',
     EMPTY_MODEL_RESPONSE: 'The free AI model returned no usable answer. No paid fallback was used. Try again.',
     INVALID_MODEL_RESPONSE: 'The free AI model returned an unusable answer. No paid fallback was used. Try again.',
+    REQUEST_TIMEOUT: 'Generation took too long. No paid fallback was used. Try again.',
     WIKI_TIMEOUT: 'IQ.wiki took too long to respond. Try again.',
     WIKI_UNAVAILABLE: 'That IQ.wiki article could not be loaded.',
     INVALID_WIKI_URL: 'Enter a direct IQ.wiki article URL, such as https://iq.wiki/wiki/solana.',
