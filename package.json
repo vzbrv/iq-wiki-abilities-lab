@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vercel dev",
     "start": "vercel dev",
-    "check": "node --check app.js && node --check api/generate.js && node --check lib/foundation.js",
-    "test": "node --test"
+    "check": "node --check app.js && node --check api/generate.js && node --check api/video.js && node --check lib/foundation.js && node --check lib/video/config.js && node --check lib/video/service.js && node --check lib/video/providers/mock.js && node --check scripts/check-deployment.mjs",
+    "test": "node --test",
+    "deploy:check": "NODE_ENV=production node scripts/check-deployment.mjs"
   },
   "dependencies": {},
   "devDependencies": {}
