@@ -11,14 +11,17 @@ import {
   getFreeModelCandidates,
   getOpenRouterReferer,
   readJsonBody,
+  readPositiveInteger,
   parseStrictJson
 } from '../lib/foundation.js';
 import {
+  buildGenerationCacheKey,
   buildPrompt,
   buildOpenRouterPayload,
   callOpenRouter,
   getConfiguredModels,
   readResponseText,
+  reuseInflight,
   validateGeneratedResult
 } from '../api/generate.js';
 
@@ -32,6 +35,16 @@ test('hardcodes the 15-second cinematic explainer profile', () => {
   assert.match(prompt, /15-second/);
   assert.match(prompt, /cinematic and explanatory, easy to understand, and entertaining/);
   assert.doesNotMatch(prompt, /20-second|30-second|documentary/);
+});
+
+test('limits article text sent to free models', () => {
+  const prompt = buildPrompt('video_scenario', {
+    title: 'Solana',
+    url: 'https://iq.wiki/wiki/solana',
+    rawText: `${'a'.repeat(14000)}SECRET_TAIL`
+  });
+
+  assert.doesNotMatch(prompt, /SECRET_TAIL/);
 });
 
 test('accepts direct HTTPS IQ.wiki article URLs', () => {
@@ -117,9 +130,9 @@ test('keeps built-in free fallbacks when models are configured', () => {
   const models = getConfiguredModels({
     OPENROUTER_MODELS: 'meta-llama/custom-model:free'
   });
-  assert.equal(models[0], 'meta-llama/custom-model:free');
-  assert.ok(models.includes('openai/gpt-oss-20b:free'));
-  assert.ok(models.includes('openrouter/free'));
+  assert.equal(models[0], 'openrouter/free');
+  assert.ok(models.includes('meta-llama/custom-model:free'));
+  assert.ok(models.includes('openai/gpt-oss-120b:free'));
   assert.equal(models.every((model) => model === 'openrouter/free' || model.endsWith(':free')), true);
 });
 
@@ -144,9 +157,9 @@ test('fails over between free models without adding a paid model', async () => {
 
 test('tries every free model and distinguishes non-quota failures', async () => {
   const models = [
-    'openai/gpt-oss-20b:free',
+    'openrouter/free',
     'qwen/qwen3-next-80b-a3b-instruct:free',
-    'openrouter/free'
+    'openai/gpt-oss-120b:free'
   ];
   const calls = [];
   await assert.rejects(
@@ -157,7 +170,8 @@ test('tries every free model and distinguishes non-quota failures', async () => 
     (error) => error.code === 'FREE_MODELS_UNAVAILABLE' && error.status === 503
   );
   assert.deepEqual(calls.map(({ model }) => model), models);
-  assert.equal(calls.every(({ timeoutMs }) => timeoutMs >= 1000 && timeoutMs <= 12000), true);
+  assert.equal(calls[0].timeoutMs, 24000);
+  assert.equal(calls.slice(1).every(({ timeoutMs }) => timeoutMs >= 1000 && timeoutMs <= 12000), true);
 });
 
 test('reports capacity only when every free model rejects for quota', async () => {
@@ -189,6 +203,17 @@ test('rate limiter bounds retained visitor entries', () => {
   assert.equal(limit('visitor-b').allowed, true);
   assert.equal(limit('visitor-c').allowed, true);
   assert.equal(limit('visitor-a').allowed, true);
+});
+
+test('sanitizes malformed positive integer settings', () => {
+  assert.equal(readPositiveInteger('bad', 8), 8);
+  assert.equal(readPositiveInteger('0', 8), 8);
+  assert.equal(readPositiveInteger('-2', 8), 8);
+  assert.equal(readPositiveInteger('3', 8), 3);
+
+  const limit = createRateLimiter({ limit: 'bad', windowMs: 0, maxEntries: -1 });
+  assert.equal(limit('visitor').allowed, true);
+  assert.equal(limit('visitor').allowed, false);
 });
 
 test('updating a full cache does not evict another entry', () => {
@@ -238,6 +263,19 @@ test('validates complete grounded video plans', () => {
     }]
   });
   assert.equal(derivedNarration.voiceover, 'Use this scene narration');
+  const aliases = validateGeneratedResult('video_scenario', {
+    script: 'A concise grounded narration for this article',
+    storyboard: [{
+      timestamp: '0-15s',
+      description: 'Show topic-specific footage',
+      text: 'Simple label',
+      script: 'Scene narration',
+      supporting_fact: 'Article fact'
+    }]
+  });
+  assert.deepEqual(aliases.hooks, ['A concise grounded narration for this article']);
+  assert.equal(aliases.scenes[0].visual, 'Show topic-specific footage');
+  assert.equal(aliases.scenes[0].source_fact, 'Article fact');
   assert.throws(
     () => validateGeneratedResult('video_scenario', {
       hooks: 'Hook',
@@ -285,6 +323,52 @@ test('fails over when a free model returns the wrong result shape', async () => 
   assert.equal(generated.model, 'openai/gpt-oss-20b:free');
 });
 
+test('generation cache keys change with article content', () => {
+  const wiki = {
+    title: 'Solana',
+    url: 'https://iq.wiki/wiki/solana',
+    rawText: 'First article version'
+  };
+  const models = ['openrouter/free'];
+  const first = buildGenerationCacheKey('video_scenario', wiki, models);
+  const second = buildGenerationCacheKey(
+    'video_scenario',
+    { ...wiki, rawText: 'Materially updated article version' },
+    models
+  );
+  assert.notEqual(first, second);
+});
+
+test('shares concurrent generation and clears completed requests', async () => {
+  const inflight = new Map();
+  let calls = 0;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const create = async () => {
+    calls += 1;
+    await gate;
+    return 42;
+  };
+
+  const first = reuseInflight(inflight, 'same', create);
+  const second = reuseInflight(inflight, 'same', create);
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  release();
+  assert.deepEqual(await Promise.all([first, second]), [42, 42]);
+  assert.equal(inflight.size, 0);
+
+  await assert.rejects(
+    reuseInflight(inflight, 'failed', async () => {
+      throw new Error('failed');
+    }),
+    /failed/
+  );
+  assert.equal(inflight.size, 0);
+});
+
 test('extracts article text and parses fenced JSON', () => {
   const wiki = extractWikiText('<html><h1>Solana</h1><main><p>Solana is a blockchain network with enough useful article text for extraction and generation.</p></main></html>');
   assert.equal(wiki.title, 'Solana');
@@ -320,6 +404,9 @@ test('uses the longest article region when the first main element is empty', () 
 
 test('normalizes free-provider response formats', () => {
   assert.deepEqual(parseStrictJson({ ok: true }), { ok: true });
+  assert.equal(extractModelContent({
+    choices: [{ text: '{"ok":true}' }]
+  }), '{"ok":true}');
   assert.equal(extractModelContent({
     choices: [{ message: { content: [{ type: 'text', text: '{"ok":' }, { type: 'text', text: 'true}' }] } }]
   }), '{"ok":true}');

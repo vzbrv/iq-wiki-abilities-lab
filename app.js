@@ -35,28 +35,34 @@ form.addEventListener('submit', async (event) => {
   event.preventDefault();
   setLoading(true);
   showStatus('Checking for a ready 15-second explainer…', 'loading');
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 75000);
 
   try {
     const url = form.wikiUrl.value.trim();
-    const stored = await lookupStoredVideo(url, controller.signal);
+    const stored = await lookupStoredVideo(url);
     if (stored?.state === 'ready' && stored.asset?.playbackUrl) {
       renderStoredVideo(stored);
       return;
     }
 
     showStatus('No current video is stored yet. Creating its free AI production plan…', 'loading');
-    const response = await fetch(`${apiBase}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'video_scenario',
-        url
-      }),
-      signal: controller.signal
-    });
-    const data = await response.json().catch(() => ({}));
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 70000);
+    let response;
+    let data;
+    try {
+      response = await fetch(`${apiBase}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'video_scenario',
+          url
+        }),
+        signal: controller.signal
+      });
+      data = await readResponseData(response);
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!response.ok) throw new StudioError(data.code, data.error, data.requestId);
     renderResult(data);
   } catch (error) {
@@ -65,36 +71,39 @@ form.addEventListener('submit', async (event) => {
     }
     showStatus(errorMessage(error), 'error');
   } finally {
-    clearTimeout(timeout);
     setLoading(false);
   }
 });
 
-async function lookupStoredVideo(url, signal) {
+async function lookupStoredVideo(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await fetch(`${apiBase}/api/video?action=lookup&url=${encodeURIComponent(url)}`, { signal });
-    const data = await response.json().catch(() => ({}));
+    const response = await fetch(`${apiBase}/api/video?action=lookup&url=${encodeURIComponent(url)}`, {
+      signal: controller.signal
+    });
+    const data = await readResponseData(response);
     if (response.ok) return data.video;
     if (data.code === 'VIDEO_LIBRARY_NOT_CONFIGURED') {
       return { state: 'missing', article: { url } };
     }
-    if ([
-      'INVALID_WIKI_URL',
-      'RATE_LIMITED',
-      'VIDEO_LIBRARY_UNAVAILABLE',
-      'VIDEO_LIBRARY_CONFIGURATION_ERROR'
-    ].includes(data.code)) {
+    if (data.code === 'INVALID_WIKI_URL') {
       throw new StudioError(data.code, data.error, data.requestId);
     }
-    throw new StudioError(
-      'VIDEO_LIBRARY_UNAVAILABLE',
-      'The video library returned an unexpected response.',
-      data.requestId
-    );
+    return { state: 'missing', article: { url } };
   } catch (error) {
-    if (error?.name === 'AbortError' || error instanceof StudioError) throw error;
-    throw new StudioError('VIDEO_LIBRARY_UNAVAILABLE', 'The video library could not be reached.');
+    if (error instanceof StudioError) throw error;
+    return { state: 'missing', article: { url } };
+  } finally {
+    clearTimeout(timeout);
   }
+}
+
+async function readResponseData(response) {
+  const parsed = await response.json().catch(() => ({}));
+  const data = parsed && typeof parsed === 'object' ? parsed : {};
+  data.requestId ||= response.headers.get('X-Request-Id') || undefined;
+  return data;
 }
 
 function renderStoredVideo(video) {
