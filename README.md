@@ -1,6 +1,6 @@
 # IQ.wiki Video Studio
 
-Visitor-ready studio that converts a live IQ.wiki article into a grounded, fixed 15-second production package:
+An embeddable widget for instant, prebuilt 15-second IQ.wiki explainers. When a stored video is unavailable, it converts the live article into a grounded production package:
 
 - complete narration
 - opening hooks
@@ -12,6 +12,19 @@ The production profile is fixed to a cinematic explainer that is clear, easy to 
 The script and scene plan use OpenRouter free models only. The server rejects any model without the `:free` suffix, except OpenRouter's `openrouter/free` router. It never falls back to a paid model.
 
 Actual video rendering is deliberately separate and remains disabled until a video provider, model allowlist, credentials, and spending limits are explicitly configured.
+
+Visitors never wait for rendering. The widget first checks the stored-video library and plays a current asset immediately.
+
+## Material article changes
+
+A stored video is invalidated when any of these are true:
+
+- The title changes.
+- A number, percentage, date, amount, or blockchain address changes.
+- The article word count changes by 20% or more.
+- Normalized article similarity falls below 90%.
+
+Formatting, punctuation, and edits below those thresholds keep the existing video.
 
 ## Run
 
@@ -34,7 +47,7 @@ Configured models are tried first, followed by the built-in free-only fallback
 list. `OPENROUTER_MODEL` remains supported when `OPENROUTER_MODELS` is unset.
 The app validates every candidate and never attempts a paid model.
 
-Use `?embed=1` for the compact embedded layout. Use an HTTPS `?api=https://api.example` only when the static frontend and API are hosted separately.
+Use `?embed=1&url=<encoded-iq-wiki-url>` for a page-specific compact widget. Use an HTTPS `?api=https://api.example` only when the static frontend and API are hosted separately.
 
 ## Verify
 
@@ -46,7 +59,19 @@ npm run deploy:check
 
 ## Video integration boundary
 
-`/api/video` provides capability, generate, poll, retry, cancel, and playback job states. It is disabled by default and cannot select a provider or paid model automatically.
+`GET /api/video?action=lookup&url=<iq.wiki-url>` is public. Publishing systems use authenticated `sync_article` and `publish_asset` actions to invalidate changed articles and attach completed assets to exact revisions.
+
+Configure the durable Upstash-compatible REST store with:
+
+```text
+VIDEO_LIBRARY_REST_URL=https://...
+VIDEO_LIBRARY_REST_TOKEN=...
+VIDEO_LIBRARY_SYNC_TOKEN=...
+```
+
+The sync token belongs only in the IQ.wiki publishing worker, never in browser code.
+
+`/api/video` also provides capability, generate, poll, retry, cancel, and playback job states. It is disabled by default and cannot select a provider or paid model automatically.
 
 Local lifecycle testing:
 

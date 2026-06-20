@@ -5,9 +5,11 @@ const outputPanel = document.querySelector('#outputPanel');
 const emptyState = document.querySelector('#emptyState');
 const statusBox = document.querySelector('#status');
 const result = document.querySelector('#result');
+const videoResult = document.querySelector('#videoResult');
 const submitButton = document.querySelector('#generatePlanBtn');
 
 if (params.get('embed') === '1') document.body.classList.add('embedded');
+if (params.get('url')) document.querySelector('#wikiUrl').value = params.get('url');
 
 function resolveApiBase(value) {
   if (!value) return '';
@@ -32,17 +34,25 @@ document.querySelectorAll('.sample').forEach((button) => {
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   setLoading(true);
-  showStatus('Loading the IQ.wiki article and asking a free AI model…', 'loading');
+  showStatus('Checking for a ready 15-second explainer…', 'loading');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 75000);
 
   try {
+    const url = form.wikiUrl.value.trim();
+    const stored = await lookupStoredVideo(url, controller.signal);
+    if (stored?.state === 'ready' && stored.asset?.playbackUrl) {
+      renderStoredVideo(stored);
+      return;
+    }
+
+    showStatus('No current video is stored yet. Creating its free AI production plan…', 'loading');
     const response = await fetch(`${apiBase}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         action: 'video_scenario',
-        url: form.wikiUrl.value.trim()
+        url
       }),
       signal: controller.signal
     });
@@ -59,6 +69,37 @@ form.addEventListener('submit', async (event) => {
     setLoading(false);
   }
 });
+
+async function lookupStoredVideo(url, signal) {
+  try {
+    const response = await fetch(`${apiBase}/api/video?action=lookup&url=${encodeURIComponent(url)}`, { signal });
+    const data = await response.json().catch(() => ({}));
+    if (response.ok) return data.video;
+    if (['INVALID_WIKI_URL', 'RATE_LIMITED'].includes(data.code)) {
+      throw new StudioError(data.code, data.error, data.requestId);
+    }
+    return null;
+  } catch (error) {
+    if (error?.name === 'AbortError' || error instanceof StudioError) throw error;
+    return null;
+  }
+}
+
+function renderStoredVideo(video) {
+  const asset = video.asset;
+  const player = document.querySelector('#videoPlayer');
+  player.src = asset.playbackUrl;
+  player.poster = asset.posterUrl || '';
+  document.querySelector('#videoTitle').textContent = video.article?.title || 'IQ.wiki explainer';
+  document.querySelector('#videoArticleLink').href = video.article?.url || form.wikiUrl.value;
+  document.querySelector('#videoProvider').textContent = [asset.provider, asset.model].filter(Boolean).join(' · ') || 'AI-generated video';
+  emptyState.hidden = true;
+  statusBox.hidden = true;
+  result.hidden = true;
+  videoResult.hidden = false;
+  player.play().catch(() => {});
+  outputPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
 
 function renderResult(data) {
   const plan = data.result || {};
@@ -95,6 +136,7 @@ function renderResult(data) {
 
   emptyState.hidden = true;
   statusBox.hidden = true;
+  videoResult.hidden = true;
   result.hidden = false;
   outputPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -124,6 +166,7 @@ function setLoading(loading) {
 function showStatus(message, type) {
   emptyState.hidden = true;
   result.hidden = true;
+  videoResult.hidden = true;
   statusBox.hidden = false;
   statusBox.className = `message ${type}`;
   statusBox.textContent = message;
@@ -157,3 +200,5 @@ class StudioError extends Error {
     this.requestId = requestId;
   }
 }
+
+if (params.get('embed') === '1' && params.get('url')) form.requestSubmit();
