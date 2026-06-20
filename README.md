@@ -47,7 +47,7 @@ Configured models are tried first, followed by the built-in free-only fallback
 list. `OPENROUTER_MODEL` remains supported when `OPENROUTER_MODELS` is unset.
 The app validates every candidate and never attempts a paid model.
 
-Use `?embed=1&url=<encoded-iq-wiki-url>` for a page-specific compact widget. Use an HTTPS `?api=https://api.example` only when the static frontend and API are hosted separately.
+Use `?embed=1&url=<encoded-iq-wiki-url>` for a page-specific compact widget. The URL is prefilled, but lookup and generation begin only after the visitor clicks. Use an HTTPS `?api=https://api.example` only when the static frontend and API are hosted separately.
 
 ## Verify
 
@@ -70,6 +70,7 @@ VIDEO_LIBRARY_SYNC_TOKEN=...
 ```
 
 The sync token belongs only in the IQ.wiki publishing worker, never in browser code.
+`npm run deploy:check` reports visitor playback as unavailable until all three values are configured.
 
 `/api/video` also provides capability, generate, poll, retry, cancel, and playback job states. It is disabled by default and cannot select a provider or paid model automatically.
 

@@ -270,10 +270,11 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 body.embedded .site-header, body.embedded .intro-copy, body.embedded footer { display: none; }
-body.embedded main { width: min(1120px, calc(100% - 20px)); padding: 10px 0; }
+body.embedded { min-width: 0; }
+body.embedded main { width: calc(100% - 20px); max-width: 1120px; padding: 10px 0; }
 
 @media (max-width: 760px) {
-  main { width: min(100% - 20px, 560px); padding-top: 28px; }
+  main { width: calc(100% - 20px); max-width: 560px; padding-top: 28px; }
   .site-header { height: 56px; padding: 0 14px; }
   .header-link { font-size: 12px; }
   h1 { font-size: 34px; }

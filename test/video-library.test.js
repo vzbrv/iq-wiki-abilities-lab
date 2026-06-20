@@ -5,6 +5,7 @@ import {
   MemoryVideoLibraryStore,
   VideoLibraryService,
   classifyArticleChange,
+  createArticleSnapshot,
 } from "../lib/video/library.js";
 
 function snapshot(overrides = {}) {
@@ -39,6 +40,64 @@ test("title and factual value changes are material", () => {
   assert.equal(
     classifyArticleChange(previous, snapshot({ exactHash: "c", facts: ["20", "0xabc"] })).reason,
     "facts_changed",
+  );
+});
+
+test("malformed article payload returns a client error", () => {
+  assert.throws(
+    () => createArticleSnapshot(null),
+    (error) => error.code === "INVALID_ARTICLE" && error.status === 400,
+  );
+});
+
+test("malformed video asset payload returns a client error", async () => {
+  const service = new VideoLibraryService(new MemoryVideoLibraryStore());
+  await assert.rejects(
+    service.publishAsset(null),
+    (error) => error.code === "INVALID_VIDEO_ASSET" && error.status === 400,
+  );
+});
+
+test("conflicting writes are retried against the latest article revision", async () => {
+  class ConflictingStore extends MemoryVideoLibraryStore {
+    conflicts = 0;
+
+    async compareAndSet(key, expectedRaw, value) {
+      if (this.conflicts > 0) {
+        this.conflicts -= 1;
+        const current = this.records.get(key);
+        if (current) {
+          this.records.set(key, {
+            ...current,
+            materialRevision: "newer-revision",
+            state: "needs_generation",
+            asset: null,
+          });
+        }
+        return false;
+      }
+      return super.compareAndSet(key, expectedRaw, value);
+    }
+  }
+
+  const store = new ConflictingStore();
+  const service = new VideoLibraryService(store);
+  const url = "https://iq.wiki/wiki/concurrency";
+  const article = {
+    title: "Concurrency",
+    url,
+    rawText: "IQ Wiki explains blockchain concepts with factual, readable articles. ".repeat(8),
+  };
+  const synced = await service.syncArticle(article);
+  store.conflicts = 1;
+
+  await assert.rejects(
+    service.publishAsset({
+      url,
+      revision: synced.revision,
+      playbackUrl: "https://cdn.example.com/stale.mp4",
+    }),
+    (error) => error.code === "STALE_VIDEO_REVISION",
   );
 });
 
