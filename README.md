@@ -70,7 +70,7 @@ VIDEO_LIBRARY_SYNC_TOKEN=...
 ```
 
 The sync token belongs only in the IQ.wiki publishing worker, never in browser code.
-`npm run deploy:check` reports visitor playback as unavailable until all three values are configured.
+Without storage configuration, the library behaves as empty: visitors can still generate a free production plan, but stored video playback and publishing remain unavailable.
 
 `/api/video` also provides capability, generate, poll, retry, cancel, and playback job states. It is disabled by default and cannot select a provider or paid model automatically.
 

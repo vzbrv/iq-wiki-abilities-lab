@@ -75,11 +75,13 @@ async function lookupStoredVideo(url, signal) {
     const response = await fetch(`${apiBase}/api/video?action=lookup&url=${encodeURIComponent(url)}`, { signal });
     const data = await response.json().catch(() => ({}));
     if (response.ok) return data.video;
+    if (data.code === 'VIDEO_LIBRARY_NOT_CONFIGURED') {
+      return { state: 'missing', article: { url } };
+    }
     if ([
       'INVALID_WIKI_URL',
       'RATE_LIMITED',
       'VIDEO_LIBRARY_UNAVAILABLE',
-      'VIDEO_LIBRARY_NOT_CONFIGURED',
       'VIDEO_LIBRARY_CONFIGURATION_ERROR'
     ].includes(data.code)) {
       throw new StudioError(data.code, data.error, data.requestId);

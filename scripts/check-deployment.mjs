@@ -20,4 +20,4 @@ if (libraryUrl && !librarySyncToken) {
 
 console.log(`OpenRouter models: ${models.length} free-only`);
 console.log(`Video engine: ${config.enabled ? `${config.provider}/${config.model}` : 'disabled (expected until provider selection)'}`);
-console.log(`Video library: ${libraryUrl ? 'configured' : 'not configured (visitor playback unavailable)'}`);
+console.log(`Video library: ${libraryUrl ? 'configured' : 'not configured (plan-only mode; stored playback unavailable)'}`);
