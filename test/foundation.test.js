@@ -214,6 +214,30 @@ test('validates complete grounded video plans', () => {
     cta: 'Read more'
   });
   assert.equal(plan.scenes[0].visual, 'Show the protocol interface');
+  const normalized = validateGeneratedResult('video_scenario', {
+    hook: 'Hook',
+    narration: Array.from({ length: 50 }, () => 'word').join(' '),
+    scenes: [{
+      timestamp: '0-15s',
+      visual_direction: 'Show the protocol interface',
+      on_screen_text: 'one two three four five six',
+      narration: 'Scene narration',
+      fact: 'The article says the protocol launched.'
+    }]
+  });
+  assert.deepEqual(normalized.hooks, ['Hook']);
+  assert.equal(normalized.voiceover.split(' ').length, 42);
+  assert.equal(normalized.scenes[0].caption, 'one two three four five');
+  const derivedNarration = validateGeneratedResult('video_scenario', {
+    hooks: ['Hook'],
+    voiceover: '',
+    scenes: [{
+      visual: 'Show the protocol interface',
+      voiceover: 'Use this scene narration',
+      source_fact: 'The article says the protocol launched.'
+    }]
+  });
+  assert.equal(derivedNarration.voiceover, 'Use this scene narration');
   assert.throws(
     () => validateGeneratedResult('video_scenario', {
       hooks: 'Hook',
@@ -225,30 +249,11 @@ test('validates complete grounded video plans', () => {
   assert.throws(
     () => validateGeneratedResult('video_scenario', {
       hooks: ['Hook'],
-      voiceover: Array.from({ length: 43 }, () => 'word').join(' '),
-      scenes: [{
-        time: '0-15s',
-        visual: 'Show the protocol interface',
-        caption: 'Protocol launch',
-        voiceover: 'Scene narration',
-        source_fact: 'The article says the protocol launched.'
-      }],
-      cta: 'Read more'
-    }),
-    (error) => error.code === 'INVALID_MODEL_RESPONSE'
-  );
-  assert.throws(
-    () => validateGeneratedResult('video_scenario', {
-      hooks: ['Hook'],
       voiceover: 'Narration',
       scenes: [{
-        time: '0-15s',
         visual: 'Show the protocol interface',
-        caption: 'one two three four five six',
-        voiceover: 'Scene narration',
-        source_fact: 'The article says the protocol launched.'
-      }],
-      cta: 'Read more'
+        voiceover: 'Scene narration'
+      }]
     }),
     (error) => error.code === 'INVALID_MODEL_RESPONSE'
   );
