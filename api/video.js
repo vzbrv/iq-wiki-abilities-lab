@@ -4,7 +4,8 @@ import { getVideoConfig, publicVideoConfig } from '../lib/video/config.js';
 import { createVideoLibraryStore, VideoLibraryService } from '../lib/video/library.js';
 import { createVideoService } from '../lib/video/service.js';
 
-let runtime;
+let videoRuntime;
+let library;
 
 export default async function handler(req, res) {
   const requestId = randomUUID();
@@ -16,14 +17,13 @@ export default async function handler(req, res) {
 
   const startedAt = Date.now();
   try {
-    const current = getRuntime();
     const queryAction = req.query?.action;
     if (req.method === 'GET' && (queryAction === 'capabilities' || (!queryAction && !req.query?.id))) {
+      const current = getVideoRuntime();
       return res.status(200).json({ video: publicVideoConfig(current.config), requestId });
     }
     if (req.method === 'GET' && queryAction === 'lookup') {
-      const video = await current.library.lookup(req.query?.url);
-      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+      const video = await getLibrary().lookup(req.query?.url);
       return res.status(200).json({ video, requestId });
     }
 
@@ -34,12 +34,14 @@ export default async function handler(req, res) {
     }
     if (action === 'sync_article' || action === 'publish_asset') {
       assertLibraryToken(req);
+      const currentLibrary = getLibrary();
       const video = action === 'sync_article'
-        ? await current.library.syncArticle(body.article)
-        : await current.library.publishAsset(body);
+        ? await currentLibrary.syncArticle(body.article)
+        : await currentLibrary.publishAsset(body);
       log('video_library_updated', { requestId, action, state: video.state, durationMs: Date.now() - startedAt });
       return res.status(200).json({ video, requestId });
     }
+    const current = getVideoRuntime();
     const id = body.id || req.query?.id;
     let job;
     if (action === 'generate') job = await current.service.createJob(body);
@@ -61,16 +63,20 @@ export default async function handler(req, res) {
   }
 }
 
-function getRuntime() {
-  if (!runtime) {
+function getVideoRuntime() {
+  if (!videoRuntime) {
     const config = getVideoConfig();
-    runtime = {
+    videoRuntime = {
       config,
-      service: createVideoService(config),
-      library: new VideoLibraryService(createVideoLibraryStore())
+      service: createVideoService(config)
     };
   }
-  return runtime;
+  return videoRuntime;
+}
+
+function getLibrary() {
+  if (!library) library = new VideoLibraryService(createVideoLibraryStore());
+  return library;
 }
 
 function setHeaders(req, res, requestId) {

@@ -75,21 +75,35 @@ async function lookupStoredVideo(url, signal) {
     const response = await fetch(`${apiBase}/api/video?action=lookup&url=${encodeURIComponent(url)}`, { signal });
     const data = await response.json().catch(() => ({}));
     if (response.ok) return data.video;
-    if (['INVALID_WIKI_URL', 'RATE_LIMITED'].includes(data.code)) {
+    if ([
+      'INVALID_WIKI_URL',
+      'RATE_LIMITED',
+      'VIDEO_LIBRARY_UNAVAILABLE',
+      'VIDEO_LIBRARY_NOT_CONFIGURED',
+      'VIDEO_LIBRARY_CONFIGURATION_ERROR'
+    ].includes(data.code)) {
       throw new StudioError(data.code, data.error, data.requestId);
     }
-    return null;
+    throw new StudioError(
+      'VIDEO_LIBRARY_UNAVAILABLE',
+      'The video library returned an unexpected response.',
+      data.requestId
+    );
   } catch (error) {
     if (error?.name === 'AbortError' || error instanceof StudioError) throw error;
-    return null;
+    throw new StudioError('VIDEO_LIBRARY_UNAVAILABLE', 'The video library could not be reached.');
   }
 }
 
 function renderStoredVideo(video) {
   const asset = video.asset;
   const player = document.querySelector('#videoPlayer');
+  player.onerror = () => {
+    showStatus('The stored video could not be played. Try again later.', 'error');
+  };
   player.src = asset.playbackUrl;
   player.poster = asset.posterUrl || '';
+  player.load();
   document.querySelector('#videoTitle').textContent = video.article?.title || 'IQ.wiki explainer';
   document.querySelector('#videoArticleLink').href = video.article?.url || form.wikiUrl.value;
   document.querySelector('#videoProvider').textContent = [asset.provider, asset.model].filter(Boolean).join(' · ') || 'AI-generated video';
@@ -187,7 +201,10 @@ function errorMessage(error) {
     WIKI_UNAVAILABLE: 'That IQ.wiki article could not be loaded.',
     INVALID_WIKI_URL: 'Enter a direct IQ.wiki article URL, such as https://iq.wiki/wiki/solana.',
     WIKI_TEXT_MISSING: 'The article did not contain enough readable text to create a video plan.',
-    CONFIGURATION_ERROR: 'Free AI generation is temporarily unavailable.'
+    CONFIGURATION_ERROR: 'Free AI generation is temporarily unavailable.',
+    VIDEO_LIBRARY_UNAVAILABLE: 'The explainer video library is temporarily unavailable. Try again later.',
+    VIDEO_LIBRARY_NOT_CONFIGURED: 'The explainer video library is temporarily unavailable. Try again later.',
+    VIDEO_LIBRARY_CONFIGURATION_ERROR: 'The explainer video library is temporarily unavailable. Try again later.'
   };
   const message = messages[error.code] || error.message || 'The request failed. Try again.';
   return error.requestId ? `${message} Reference: ${error.requestId.slice(0, 8)}` : message;
@@ -200,5 +217,3 @@ class StudioError extends Error {
     this.requestId = requestId;
   }
 }
-
-if (params.get('embed') === '1' && params.get('url')) form.requestSubmit();
