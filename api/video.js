@@ -1,11 +1,21 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { AppError, readJsonBody } from '../lib/foundation.js';
+import {
+  AppError,
+  assertJsonContentType,
+  createRateLimiter,
+  readJsonBody,
+  readPositiveInteger
+} from '../lib/foundation.js';
 import { getVideoConfig, publicVideoConfig } from '../lib/video/config.js';
 import { createVideoLibraryStore, VideoLibraryService } from '../lib/video/library.js';
 import { createVideoService } from '../lib/video/service.js';
 
 let videoRuntime;
 let library;
+const videoLimit = createRateLimiter({
+  limit: readPositiveInteger(process.env.VIDEO_RATE_LIMIT, 120),
+  windowMs: 60000
+});
 
 export default async function handler(req, res) {
   const requestId = randomUUID();
@@ -18,6 +28,7 @@ export default async function handler(req, res) {
   const startedAt = Date.now();
   try {
     const queryAction = req.query?.action;
+    if (req.method === 'GET') enforceRateLimit(videoLimit(getClientId(req)));
     if (req.method === 'GET' && (queryAction === 'capabilities' || (!queryAction && !req.query?.id))) {
       const current = getVideoRuntime();
       return res.status(200).json({ video: publicVideoConfig(current.config), requestId });
@@ -27,6 +38,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ video, requestId });
     }
 
+    if (req.method === 'POST') assertJsonContentType(req);
     const body = req.method === 'POST' ? await readJsonBody(req) : {};
     const action = body.action || req.query?.action || 'poll';
     if (req.method === 'GET' && action !== 'poll') {
@@ -41,6 +53,7 @@ export default async function handler(req, res) {
       log('video_library_updated', { requestId, action, state: video.state, durationMs: Date.now() - startedAt });
       return res.status(200).json({ video, requestId });
     }
+    enforceRateLimit(videoLimit(getClientId(req)));
     const current = getVideoRuntime();
     const id = body.id || req.query?.id;
     let job;
@@ -60,6 +73,19 @@ export default async function handler(req, res) {
       durationMs: Date.now() - startedAt
     });
     return sendError(res, requestId, error);
+  }
+}
+
+function getClientId(req) {
+  return String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown')
+    .split(',')[0]
+    .trim()
+    .slice(0, 128) || 'unknown';
+}
+
+function enforceRateLimit(result) {
+  if (!result.allowed) {
+    throw new AppError(429, 'RATE_LIMITED', 'Too many requests. Try again shortly.', true);
   }
 }
 
@@ -103,12 +129,13 @@ function assertLibraryToken(req) {
   }
 }
 
-function sendError(res, requestId, error) {
-  const status = error.status || 500;
+export function sendError(res, requestId, error) {
+  const knownError = error instanceof AppError;
+  const status = knownError ? error.status : 500;
   return res.status(status).json({
-    error: status === 500 ? 'Unexpected server error.' : error.message,
-    code: error.code || 'INTERNAL_ERROR',
-    retryable: Boolean(error.retryable),
+    error: knownError ? error.message : 'Unexpected server error.',
+    code: knownError ? error.code : 'INTERNAL_ERROR',
+    retryable: knownError && Boolean(error.retryable),
     requestId
   });
 }
