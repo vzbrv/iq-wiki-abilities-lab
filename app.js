@@ -1,3 +1,4 @@
+const MAX_API_RESPONSE_BYTES = 1_000_000;
 const params = new URLSearchParams(window.location.search);
 const apiBase = resolveApiBase(params.get('api'));
 const form = document.querySelector('#studioForm');
@@ -8,6 +9,7 @@ const result = document.querySelector('#result');
 const videoResult = document.querySelector('#videoResult');
 const videoPlayer = document.querySelector('#videoPlayer');
 const submitButton = document.querySelector('#generatePlanBtn');
+const failedPlaybackUrls = new Set();
 
 if (params.get('embed') === '1') document.body.classList.add('embedded');
 if (params.get('url')) document.querySelector('#wikiUrl').value = params.get('url');
@@ -41,32 +43,15 @@ form.addEventListener('submit', async (event) => {
   try {
     const url = form.wikiUrl.value.trim();
     const stored = await lookupStoredVideo(url);
-    if (stored?.state === 'ready' && stored.asset?.playbackUrl) {
-      renderStoredVideo(stored);
-      return;
+    if (
+      stored?.state === 'ready'
+      && stored.asset?.playbackUrl
+      && !failedPlaybackUrls.has(stored.asset.playbackUrl)
+    ) {
+      if (await renderStoredVideo(stored)) return;
     }
 
-    showStatus('No current video is stored yet. Creating its free AI production plan…', 'loading');
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 70000);
-    let response;
-    let data;
-    try {
-      response = await fetch(`${apiBase}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'video_scenario',
-          url
-        }),
-        signal: controller.signal
-      });
-      data = await readResponseData(response);
-    } finally {
-      clearTimeout(timeout);
-    }
-    if (!response.ok) throw new StudioError(data.code, data.error, data.requestId);
-    renderResult(data);
+    await generatePlan(url);
   } catch (error) {
     if (error?.name === 'AbortError') {
       error = new StudioError('REQUEST_TIMEOUT', 'The request took too long.');
@@ -76,6 +61,30 @@ form.addEventListener('submit', async (event) => {
     setLoading(false);
   }
 });
+
+async function generatePlan(url) {
+  showStatus('No current video is stored yet. Creating its free AI production plan…', 'loading');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 70000);
+  let response;
+  let data;
+  try {
+    response = await fetch(`${apiBase}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'video_scenario',
+        url
+      }),
+      signal: controller.signal
+    });
+    data = await readResponseData(response);
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) throw new StudioError(data.code, data.error, data.requestId);
+  renderResult(data);
+}
 
 async function lookupStoredVideo(url) {
   const controller = new AbortController();
@@ -94,7 +103,7 @@ async function lookupStoredVideo(url) {
     }
     return { state: 'missing', article: { url } };
   } catch (error) {
-    if (error instanceof StudioError) throw error;
+    if (error instanceof StudioError && error.code === 'INVALID_WIKI_URL') throw error;
     return { state: 'missing', article: { url } };
   } finally {
     clearTimeout(timeout);
@@ -102,7 +111,49 @@ async function lookupStoredVideo(url) {
 }
 
 async function readResponseData(response) {
-  const parsed = await response.json().catch(() => ({}));
+  const contentLength = Number(response.headers.get('Content-Length'));
+  if (Number.isFinite(contentLength) && contentLength > MAX_API_RESPONSE_BYTES) {
+    throw new StudioError('API_RESPONSE_TOO_LARGE', 'The server returned too much data.');
+  }
+
+  let text = '';
+  if (response.body?.getReader) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let byteLength = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > MAX_API_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new StudioError('API_RESPONSE_TOO_LARGE', 'The server returned too much data.');
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } else {
+    text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > MAX_API_RESPONSE_BYTES) {
+      throw new StudioError('API_RESPONSE_TOO_LARGE', 'The server returned too much data.');
+    }
+  }
+
+  let parsed = {};
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    if (response.ok) {
+      throw new StudioError('INVALID_API_RESPONSE', 'The server returned an invalid response.');
+    }
+    parsed = {};
+  }
+  if (response.ok && !text) {
+    throw new StudioError('INVALID_API_RESPONSE', 'The server returned an empty response.');
+  }
+  if (response.ok && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) {
+    throw new StudioError('INVALID_API_RESPONSE', 'The server returned an invalid response.');
+  }
   const data = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   data.requestId ||= response.headers.get('X-Request-Id') || undefined;
   return data;
@@ -119,13 +170,12 @@ function resetVideoPlayer() {
 function renderStoredVideo(video) {
   const asset = video.asset;
   resetVideoPlayer();
-  videoPlayer.onerror = () => {
-    resetVideoPlayer();
-    showStatus('The stored video could not be played. Try again later.', 'error');
-  };
   videoPlayer.src = asset.playbackUrl;
-  videoPlayer.poster = asset.posterUrl || '';
-  videoPlayer.load();
+  if (asset.posterUrl) {
+    videoPlayer.poster = asset.posterUrl;
+  } else {
+    videoPlayer.removeAttribute('poster');
+  }
   document.querySelector('#videoTitle').textContent = video.article?.title || 'IQ.wiki explainer';
   document.querySelector('#videoArticleLink').href = video.article?.url || form.wikiUrl.value;
   document.querySelector('#videoProvider').textContent = [asset.provider, asset.model].filter(Boolean).join(' · ') || 'AI-generated video';
@@ -133,8 +183,27 @@ function renderStoredVideo(video) {
   statusBox.hidden = true;
   result.hidden = true;
   videoResult.hidden = false;
-  videoPlayer.play().catch(() => {});
   outputPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => finish(false), 8000);
+    const finish = (ready) => {
+      clearTimeout(timeout);
+      videoPlayer.removeEventListener('loadedmetadata', handleReady);
+      videoPlayer.removeEventListener('error', handleError);
+      if (!ready) {
+        failedPlaybackUrls.add(asset.playbackUrl);
+        resetVideoPlayer();
+      } else {
+        videoPlayer.play().catch(() => {});
+      }
+      resolve(ready);
+    };
+    const handleReady = () => finish(true);
+    const handleError = () => finish(false);
+    videoPlayer.addEventListener('loadedmetadata', handleReady, { once: true });
+    videoPlayer.addEventListener('error', handleError, { once: true });
+    videoPlayer.load();
+  });
 }
 
 function renderResult(data) {
@@ -219,6 +288,8 @@ function errorMessage(error) {
     EMPTY_MODEL_RESPONSE: 'The free AI model returned no usable answer. No paid fallback was used. Try again.',
     INVALID_MODEL_RESPONSE: 'The free AI model returned an unusable answer. No paid fallback was used. Try again.',
     REQUEST_TIMEOUT: 'Generation took too long. No paid fallback was used. Try again.',
+    API_RESPONSE_TOO_LARGE: 'The server response was too large. Try again.',
+    INVALID_API_RESPONSE: 'The server returned an invalid response. Try again.',
     WIKI_TIMEOUT: 'IQ.wiki took too long to respond. Try again.',
     WIKI_UNAVAILABLE: 'That IQ.wiki article could not be loaded.',
     INVALID_WIKI_URL: 'Enter a direct IQ.wiki article URL, such as https://iq.wiki/wiki/solana.',

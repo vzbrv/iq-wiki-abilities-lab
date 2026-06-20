@@ -49,7 +49,7 @@ test('limits article text sent to free models', () => {
   const prompt = buildPrompt('video_scenario', {
     title: 'Solana',
     url: 'https://iq.wiki/wiki/solana',
-    rawText: `${'a'.repeat(14000)}SECRET_TAIL`
+    rawText: `${'a'.repeat(8000)}SECRET_TAIL`
   });
 
   assert.doesNotMatch(prompt, /SECRET_TAIL/);
@@ -151,7 +151,7 @@ test('keeps built-in free fallbacks when models are configured', () => {
   });
   assert.equal(models[0], 'openrouter/free');
   assert.ok(models.includes('meta-llama/custom-model:free'));
-  assert.ok(models.includes('openai/gpt-oss-120b:free'));
+  assert.ok(models.includes('openai/gpt-oss-20b:free'));
   assert.equal(models.every((model) => model === 'openrouter/free' || model.endsWith(':free')), true);
 });
 
@@ -189,7 +189,7 @@ test('tries every free model and distinguishes non-quota failures', async () => 
     (error) => error.code === 'FREE_MODELS_UNAVAILABLE' && error.status === 503
   );
   assert.deepEqual(calls.map(({ model }) => model), models);
-  assert.equal(calls[0].timeoutMs, 24000);
+  assert.equal(calls[0].timeoutMs, 14000);
   assert.equal(calls.slice(1).every(({ timeoutMs }) => timeoutMs >= 1000 && timeoutMs <= 12000), true);
 });
 
@@ -259,6 +259,7 @@ test('validates complete grounded video plans', () => {
   });
   assert.equal(plan.scenes[0].visual, 'Show the protocol interface 1');
   assert.deepEqual(plan.scenes.map((scene) => scene.time), ['0-5s', '5-10s', '10-15s']);
+  assert.equal(plan.voiceover, 'Scene narration Scene narration Scene narration');
   const normalized = validateGeneratedResult('video_scenario', {
     hook: 'Hook',
     narration: Array.from({ length: 50 }, () => 'word').join(' '),
@@ -266,12 +267,16 @@ test('validates complete grounded video plans', () => {
       timestamp: '0-15s',
       visual_direction: 'Show the protocol interface',
       on_screen_text: 'one two three four five six',
-      narration: 'Scene narration',
+      narration: '',
       fact: 'The article says the protocol launched.'
     }))
   });
   assert.deepEqual(normalized.hooks, ['Hook']);
   assert.equal(normalized.voiceover.split(' ').length, 42);
+  assert.equal(
+    normalized.scenes.map((scene) => scene.voiceover).join(' '),
+    normalized.voiceover
+  );
   assert.equal(normalized.scenes[0].caption, 'one two three four five');
   const derivedNarration = validateGeneratedResult('video_scenario', {
     hooks: ['Hook'],
@@ -285,6 +290,7 @@ test('validates complete grounded video plans', () => {
   assert.equal(derivedNarration.voiceover, 'Use this scene narration');
   const aliases = validateGeneratedResult('video_scenario', {
     script: 'A concise grounded narration for this article',
+    hooks: ['Alias hook'],
     storyboard: buildScenes(() => ({
       timestamp: '0-15s',
       description: 'Show topic-specific footage',
@@ -293,7 +299,7 @@ test('validates complete grounded video plans', () => {
       supporting_fact: 'Article fact'
     }))
   });
-  assert.deepEqual(aliases.hooks, ['A concise grounded narration for this article']);
+  assert.deepEqual(aliases.hooks, ['Alias hook']);
   assert.equal(aliases.scenes[0].visual, 'Show topic-specific footage');
   assert.equal(aliases.scenes[0].source_fact, 'Article fact');
   assert.throws(
@@ -326,6 +332,60 @@ test('validates complete grounded video plans', () => {
       })).slice(0, 2)
     }),
     (error) => error.code === 'INVALID_MODEL_RESPONSE'
+  );
+});
+
+test('accepts wrapped plans with keyed scenes', () => {
+  const plan = validateGeneratedResult('video_scenario', {
+    result: {
+      data: {
+        video_plan: {
+          hook: 'A useful hook',
+          narration: 'One two three. Four five six. Seven eight nine.',
+          scenes: {
+            opening: {
+              narration: 'One two three.',
+              visual: 'Show the article subject.',
+              source_fact: 'Fact one.'
+            },
+            middle: {
+              narration: 'Four five six.',
+              visual: 'Explain the mechanism.',
+              source_fact: 'Fact two.'
+            },
+            closing: {
+              narration: 'Seven eight nine.',
+              visual: 'Show the practical result.',
+              source_fact: 'Fact three.'
+            }
+          }
+        }
+      }
+    }
+  });
+
+  assert.equal(plan.scenes.length, 3);
+  assert.equal(plan.voiceover, 'One two three. Four five six. Seven eight nine.');
+});
+
+test('accepts grounded facts returned separately from video scenes', () => {
+  const plan = validateGeneratedResult('video_scenario', {
+    hook: 'A useful hook',
+    narration: 'One two three. Four five six. Seven eight nine.',
+    facts: [
+      'Fact one from the article.',
+      { claim: 'Fact two from the article.' },
+      { source_fact: 'Fact three from the article.' }
+    ],
+    scenes: buildScenes((index) => ({
+      narration: `Scene ${index + 1} narration.`,
+      visual: `Show scene ${index + 1}.`
+    }))
+  });
+
+  assert.deepEqual(
+    plan.scenes.map((scene) => scene.source_fact),
+    ['Fact one from the article.', 'Fact two from the article.', 'Fact three from the article.']
   );
 });
 
@@ -488,6 +548,12 @@ test('normalizes free-provider response formats', () => {
   assert.equal(extractModelContent({
     choices: [{ message: { content: [{ type: 'text', text: '{"ok":' }, { type: 'text', text: 'true}' }] } }]
   }), '{"ok":true}');
+  assert.equal(extractModelContent({
+    choices: [{ message: { content: '', reasoning_content: '{"ok":true}' } }]
+  }), '{"ok":true}');
+  assert.deepEqual(parseStrictJson(extractModelContent({
+    choices: [{ message: { content: 'I will provide JSON.', reasoning: 'Analysis\n{"ok":true}' } }]
+  })), { ok: true });
   assert.throws(() => parseStrictJson([]), /invalid data/);
   assert.throws(() => extractModelContent({ choices: [] }), /no usable content/);
 });

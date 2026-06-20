@@ -24,14 +24,14 @@ import {
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_FREE_MODELS = [
   'openrouter/free',
-  'openai/gpt-oss-120b:free',
-  'nvidia/nemotron-3-super-120b-a12b:free',
-  'qwen/qwen3-next-80b-a3b-instruct:free'
+  'openai/gpt-oss-20b:free',
+  'google/gemma-4-26b-a4b-it:free',
+  'nvidia/nemotron-3-nano-30b-a3b:free'
 ];
 const FREE_GENERATION_BUDGET_MS = 50000;
-const ROUTER_TIMEOUT_MS = 24000;
+const ROUTER_TIMEOUT_MS = 14000;
 const FALLBACK_TIMEOUT_MS = 12000;
-const GENERATION_ARTICLE_MAX_CHARS = 14000;
+const GENERATION_ARTICLE_MAX_CHARS = 8000;
 const VIDEO_SCENE_TIMES = ['0-5s', '5-10s', '10-15s'];
 const wikiCache = new TTLCache(100);
 const resultCache = new TTLCache(100);
@@ -190,7 +190,7 @@ Article:
     return `${shared}
 Create a grounded ${VIDEO_DURATION_SECONDS}-second vertical video production plan.
 The fixed style is ${VIDEO_STYLE_DESCRIPTION}. Keep it accurate, energetic, visually specific, and non-sensational.
-Return exactly this shape: {"hooks":["hook 1","hook 2","hook 3","hook 4","hook 5"],"voiceover":"the complete narration","scenes":[{"time":"0-5s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"},{"time":"5-10s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"},{"time":"10-15s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"}],"cta":"short IQ.wiki CTA"}.
+Return exactly this shape: {"hooks":["one strong opening line"],"voiceover":"the complete narration","scenes":[{"time":"0-5s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"},{"time":"5-10s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"},{"time":"10-15s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"}],"cta":"short IQ.wiki CTA"}.
 The top-level voiceover must be the scene voiceovers joined in order. Keep that narration to no more than ${VIDEO_MAX_NARRATION_WORDS} words total. Keep every caption to no more than five words.
 Visuals must depict article entities, products, events, places, timelines, metrics, or processes. No random abstract graphics.`;
   }
@@ -272,10 +272,16 @@ export async function reuseInflight(inflight, key, create) {
 }
 
 export function validateGeneratedResult(action, value) {
+  value = unwrapGeneratedValue(action, value);
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalidModelResult();
 
   if (action === 'video_scenario') {
-    const rawScenes = value.scenes ?? value.scene_plan ?? value.scenePlan ?? value.storyboard ?? value.shots;
+    const rawScenes = normalizeArrayLike(
+      value.scenes ?? value.scene_plan ?? value.scenePlan ?? value.storyboard ?? value.shots
+    );
+    const fallbackFacts = normalizeArrayLike(
+      value.source_facts ?? value.sourceFacts ?? value.facts ?? value.grounding
+    );
     const scenes = requiredArray(
       rawScenes,
       VIDEO_SCENE_TIMES.length,
@@ -292,7 +298,7 @@ export function validateGeneratedResult(action, value) {
           5
         ),
         voiceover: optionalText(scene?.voiceover ?? scene?.narration ?? scene?.script, 500),
-        source_fact: requiredText(
+        source_fact: optionalText(
           scene?.source_fact
             ?? scene?.sourceFact
             ?? scene?.fact
@@ -303,16 +309,32 @@ export function validateGeneratedResult(action, value) {
         )
       };
     });
-    const sceneNarration = scenes.map((scene) => scene.voiceover).filter(Boolean).join(' ');
-    const voiceover = limitWords(
-      requiredText(optionalText(value.voiceover ?? value.narration ?? value.script, 3000) || sceneNarration, 3000),
-      VIDEO_MAX_NARRATION_WORDS
-    );
+    scenes.forEach((scene, index) => {
+      scene.source_fact = requiredText(
+        scene.source_fact || extractSourceFact(fallbackFacts?.[index]),
+        500
+      );
+    });
+
+    const suppliedVoiceover = optionalText(value.voiceover ?? value.narration ?? value.script, 3000);
+    if (!scenes.every((scene) => scene.voiceover) && suppliedVoiceover) {
+      const narrationWords = limitWords(suppliedVoiceover, VIDEO_MAX_NARRATION_WORDS).split(/\s+/);
+      scenes.forEach((scene, index) => {
+        const start = Math.floor((index * narrationWords.length) / scenes.length);
+        const end = Math.floor(((index + 1) * narrationWords.length) / scenes.length);
+        scene.voiceover = narrationWords.slice(start, end).join(' ');
+      });
+    }
+
     let remainingNarrationWords = VIDEO_MAX_NARRATION_WORDS;
     for (const scene of scenes) {
       scene.voiceover = limitWords(scene.voiceover, remainingNarrationWords);
       remainingNarrationWords -= countWords(scene.voiceover);
     }
+    const voiceover = requiredText(
+      scenes.map((scene) => scene.voiceover).filter(Boolean).join(' '),
+      3000
+    );
     return {
       hooks: normalizeHooks(value.hooks ?? value.hook, voiceover),
       voiceover,
@@ -346,6 +368,46 @@ export function validateGeneratedResult(action, value) {
   }
 
   invalidModelResult();
+}
+
+function unwrapGeneratedValue(action, value) {
+  let current = value;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return current;
+    if (hasExpectedRoot(action, current)) return current;
+    const actionSpecific = action === 'video_scenario'
+      ? current.video_plan ?? current.videoPlan ?? current.scenario
+      : action === 'funding_timeline'
+        ? current.timeline
+        : current.story;
+    const candidate = actionSpecific ?? current.result ?? current.data ?? current.output;
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return current;
+    current = candidate;
+  }
+  return current;
+}
+
+function hasExpectedRoot(action, value) {
+  if (action === 'video_scenario') {
+    return (value.scenes ?? value.scene_plan ?? value.scenePlan ?? value.storyboard ?? value.shots) != null;
+  }
+  if (action === 'funding_timeline') return value.events != null;
+  if (action === 'crypto_lore') return value.chapters != null;
+  return false;
+}
+
+function normalizeArrayLike(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === 'object') return Object.values(value);
+  return value;
+}
+
+function extractSourceFact(value) {
+  if (typeof value === 'string') return value;
+  return optionalText(
+    value?.source_fact ?? value?.sourceFact ?? value?.fact ?? value?.text ?? value?.claim,
+    500
+  );
 }
 
 function requiredArray(value, maxLength, minLength = 1) {

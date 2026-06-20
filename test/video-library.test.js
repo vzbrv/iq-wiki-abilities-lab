@@ -299,6 +299,16 @@ test("library preserves minor edits and invalidates material edits", async () =>
   assert.equal(unchanged.state, "ready");
   assert.equal(unchanged.asset.playbackUrl, published.asset.playbackUrl);
 
+  const retitled = await service.syncArticle({
+    ...article,
+    title: "IQ wiki",
+    rawText: `${baseText} Minor clarification.`,
+  });
+  assert.equal(retitled.state, "ready");
+  const retitledLookup = await service.lookup(article.url);
+  assert.equal(retitledLookup.state, "ready");
+  assert.equal(retitledLookup.article.title, "IQ wiki");
+
   const changed = await service.syncArticle({ ...article, title: "IQ Wiki Protocol" });
   assert.equal(changed.state, "needs_generation");
   assert.equal(changed.asset, null);
