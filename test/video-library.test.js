@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   MemoryVideoLibraryStore,
+  RestVideoLibraryStore,
   VideoLibraryService,
   classifyArticleChange,
   createArticleSnapshot,
@@ -30,6 +31,36 @@ test("20 percent word-count change is material", () => {
   const result = classifyArticleChange(previous, snapshot({ exactHash: "c", wordCount: 120 }));
   assert.equal(result.material, true);
   assert.equal(result.reason, "length_changed");
+});
+
+test("minor edits accumulate against the last material revision", async () => {
+  const service = new VideoLibraryService(new MemoryVideoLibraryStore());
+  const phrase = "alpha beta gamma delta epsilon zeta eta theta iota kappa ";
+  const article = {
+    title: "Cumulative changes",
+    url: "https://iq.wiki/wiki/cumulative-changes",
+    rawText: phrase.repeat(10),
+  };
+
+  const first = await service.syncArticle(article);
+  await service.publishAsset({
+    url: article.url,
+    revision: first.revision,
+    playbackUrl: "https://cdn.example.com/cumulative.mp4",
+  });
+
+  const minor = await service.syncArticle({
+    ...article,
+    rawText: phrase.repeat(11),
+  });
+  assert.equal(minor.state, "ready");
+
+  const material = await service.syncArticle({
+    ...article,
+    rawText: phrase.repeat(12),
+  });
+  assert.equal(material.state, "needs_generation");
+  assert.equal(material.asset, null);
 });
 
 test("title and factual value changes are material", () => {
@@ -87,6 +118,32 @@ test("partial production library configuration remains fatal", () => {
       VIDEO_LIBRARY_REST_URL: "https://storage.example.com",
     }),
     (error) => error.code === "VIDEO_LIBRARY_CONFIGURATION_ERROR" && error.status === 503,
+  );
+});
+
+test("rejects unsafe video library endpoints and blank tokens", () => {
+  for (const url of [
+    "http://storage.example.com",
+    "https://user:pass@storage.example.com",
+    "https://storage.example.com/?command=GET",
+  ]) {
+    assert.throws(
+      () => new RestVideoLibraryStore({ url, token: "token" }),
+      (error) =>
+        error.code === "VIDEO_LIBRARY_CONFIGURATION_ERROR" &&
+        error.status === 503,
+    );
+  }
+
+  assert.throws(
+    () =>
+      new RestVideoLibraryStore({
+        url: "https://storage.example.com",
+        token: "   ",
+      }),
+    (error) =>
+      error.code === "VIDEO_LIBRARY_CONFIGURATION_ERROR" &&
+      error.status === 503,
   );
 });
 

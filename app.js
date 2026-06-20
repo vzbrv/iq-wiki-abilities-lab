@@ -6,6 +6,7 @@ const emptyState = document.querySelector('#emptyState');
 const statusBox = document.querySelector('#status');
 const result = document.querySelector('#result');
 const videoResult = document.querySelector('#videoResult');
+const videoPlayer = document.querySelector('#videoPlayer');
 const submitButton = document.querySelector('#generatePlanBtn');
 
 if (params.get('embed') === '1') document.body.classList.add('embedded');
@@ -33,6 +34,7 @@ document.querySelectorAll('.sample').forEach((button) => {
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
+  resetVideoPlayer();
   setLoading(true);
   showStatus('Checking for a ready 15-second explainer…', 'loading');
 
@@ -101,20 +103,29 @@ async function lookupStoredVideo(url) {
 
 async function readResponseData(response) {
   const parsed = await response.json().catch(() => ({}));
-  const data = parsed && typeof parsed === 'object' ? parsed : {};
+  const data = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   data.requestId ||= response.headers.get('X-Request-Id') || undefined;
   return data;
 }
 
+function resetVideoPlayer() {
+  videoPlayer.pause();
+  videoPlayer.onerror = null;
+  videoPlayer.removeAttribute('src');
+  videoPlayer.removeAttribute('poster');
+  videoPlayer.load();
+}
+
 function renderStoredVideo(video) {
   const asset = video.asset;
-  const player = document.querySelector('#videoPlayer');
-  player.onerror = () => {
+  resetVideoPlayer();
+  videoPlayer.onerror = () => {
+    resetVideoPlayer();
     showStatus('The stored video could not be played. Try again later.', 'error');
   };
-  player.src = asset.playbackUrl;
-  player.poster = asset.posterUrl || '';
-  player.load();
+  videoPlayer.src = asset.playbackUrl;
+  videoPlayer.poster = asset.posterUrl || '';
+  videoPlayer.load();
   document.querySelector('#videoTitle').textContent = video.article?.title || 'IQ.wiki explainer';
   document.querySelector('#videoArticleLink').href = video.article?.url || form.wikiUrl.value;
   document.querySelector('#videoProvider').textContent = [asset.provider, asset.model].filter(Boolean).join(' · ') || 'AI-generated video';
@@ -122,7 +133,7 @@ function renderStoredVideo(video) {
   statusBox.hidden = true;
   result.hidden = true;
   videoResult.hidden = false;
-  player.play().catch(() => {});
+  videoPlayer.play().catch(() => {});
   outputPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 

@@ -1,5 +1,6 @@
 import { getFreeModelCandidates } from '../lib/foundation.js';
 import { getVideoConfig } from '../lib/video/config.js';
+import { createVideoLibraryStore } from '../lib/video/library.js';
 import { createVideoService } from '../lib/video/service.js';
 
 const models = getFreeModelCandidates(
@@ -7,6 +8,7 @@ const models = getFreeModelCandidates(
 );
 const config = getVideoConfig();
 createVideoService(config);
+createVideoLibraryStore(process.env);
 
 const libraryUrl = process.env.VIDEO_LIBRARY_REST_URL;
 const libraryToken = process.env.VIDEO_LIBRARY_REST_TOKEN;
