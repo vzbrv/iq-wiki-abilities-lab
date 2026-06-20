@@ -32,7 +32,7 @@ Configured models are tried first, followed by the built-in free-only fallback
 list. `OPENROUTER_MODEL` remains supported when `OPENROUTER_MODELS` is unset.
 The app validates every candidate and never attempts a paid model.
 
-Use `?embed=1` for the compact embedded layout. Use `?api=https://api.example` only when the static frontend and API are hosted separately.
+Use `?embed=1` for the compact embedded layout. Use an HTTPS `?api=https://api.example` only when the static frontend and API are hosted separately.
 
 ## Verify
 

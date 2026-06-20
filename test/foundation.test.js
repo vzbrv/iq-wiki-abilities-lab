@@ -9,12 +9,15 @@ import {
   extractModelContent,
   extractWikiText,
   getFreeModelCandidates,
+  getOpenRouterReferer,
+  readJsonBody,
   parseStrictJson
 } from '../lib/foundation.js';
 import {
   buildOpenRouterPayload,
   callOpenRouter,
   getConfiguredModels,
+  readResponseText,
   validateGeneratedResult
 } from '../api/generate.js';
 
@@ -38,8 +41,39 @@ test('accepts localized IQ.wiki article URLs', () => {
 
 test('rejects non-IQ.wiki and non-article URLs', () => {
   assert.throws(() => assertIqWikiUrl('https://example.com/wiki/solana'), AppError);
+  assert.throws(() => assertIqWikiUrl('https://attacker.iq.wiki/wiki/solana'), AppError);
   assert.throws(() => assertIqWikiUrl('https://iq.wiki/rank/cryptocurrencies'), AppError);
   assert.throws(() => assertIqWikiUrl('https://iq.wiki/wiki/'), AppError);
+});
+
+test('enforces JSON object type and size after platform parsing', async () => {
+  assert.deepEqual(await readJsonBody({ body: { action: 'load_wiki' } }), { action: 'load_wiki' });
+  await assert.rejects(readJsonBody({ body: [] }), { code: 'INVALID_JSON' });
+  await assert.rejects(readJsonBody({ body: '[]' }), { code: 'INVALID_JSON' });
+  await assert.rejects(
+    readJsonBody({ body: { value: 'x'.repeat(70000) } }),
+    { code: 'REQUEST_TOO_LARGE' }
+  );
+});
+
+test('uses only a configured trusted URL for OpenRouter attribution', () => {
+  assert.equal(getOpenRouterReferer({}), 'https://iq.wiki');
+  assert.equal(
+    getOpenRouterReferer({ VERCEL_URL: 'iq-wiki.example' }),
+    'https://iq-wiki.example'
+  );
+  assert.equal(
+    getOpenRouterReferer({ PUBLIC_APP_URL: 'http://attacker.example' }),
+    'https://iq.wiki'
+  );
+});
+
+test('stops reading IQ.wiki responses at the byte limit', async () => {
+  assert.equal(await readResponseText(new Response('article'), 7), 'article');
+  await assert.rejects(
+    readResponseText(new Response('éééé'), 7),
+    { code: 'WIKI_TOO_LARGE', status: 413 }
+  );
 });
 
 test('does not require provider-specific JSON mode from free models', () => {

@@ -1,5 +1,5 @@
 const params = new URLSearchParams(window.location.search);
-const apiBase = params.get('api')?.replace(/\/$/, '') || '';
+const apiBase = resolveApiBase(params.get('api'));
 const form = document.querySelector('#studioForm');
 const outputPanel = document.querySelector('#outputPanel');
 const emptyState = document.querySelector('#emptyState');
@@ -8,6 +8,19 @@ const result = document.querySelector('#result');
 const submitButton = document.querySelector('#generatePlanBtn');
 
 if (params.get('embed') === '1') document.body.classList.add('embedded');
+
+function resolveApiBase(value) {
+  if (!value) return '';
+  try {
+    const url = new URL(value);
+    const isLocal = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname);
+    if (url.protocol !== 'https:' && !(isLocal && url.protocol === 'http:')) return '';
+    if (url.username || url.password || url.search || url.hash) return '';
+    return `${url.origin}${url.pathname.replace(/\/$/, '')}`;
+  } catch {
+    return '';
+  }
+}
 
 document.querySelectorAll('.sample').forEach((button) => {
   button.addEventListener('click', () => {

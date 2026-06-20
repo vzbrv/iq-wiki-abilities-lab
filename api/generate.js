@@ -7,6 +7,8 @@ import {
   extractModelContent,
   extractWikiText,
   getFreeModelCandidates,
+  getOpenRouterReferer,
+  readJsonBody,
   parseStrictJson
 } from '../lib/foundation.js';
 
@@ -33,7 +35,7 @@ export default async function handler(req, res) {
 
   const startedAt = Date.now();
   try {
-    const body = await readBody(req);
+    const body = await readJsonBody(req);
     const action = body.action === 'short_video' ? 'video_scenario' : body.action;
     const client = getClientId(req);
     enforceRateLimit(action === 'load_wiki' ? loadLimit(client) : generateLimit(client));
@@ -100,22 +102,7 @@ function setHeaders(req, res, requestId) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Vary', 'Origin');
   res.setHeader('X-Request-Id', requestId);
-}
-
-async function readBody(req) {
-  if (req.body && typeof req.body === 'object') return req.body;
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > 65536) throw new AppError(413, 'REQUEST_TOO_LARGE', 'Request is too large.');
-    chunks.push(chunk);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-  } catch {
-    throw new AppError(400, 'INVALID_JSON', 'Request body must be valid JSON.');
-  }
+  res.setHeader('Cache-Control', 'no-store');
 }
 
 async function loadWiki(rawUrl) {
@@ -138,8 +125,7 @@ async function loadWiki(rawUrl) {
   if (!type.includes('text/html')) throw new AppError(422, 'INVALID_WIKI_CONTENT', 'The URL did not return an HTML article.');
   const declaredSize = Number(response.headers.get('content-length') || 0);
   if (declaredSize > 2000000) throw new AppError(413, 'WIKI_TOO_LARGE', 'The IQ.wiki article is too large.');
-  const html = await response.text();
-  if (html.length > 2000000) throw new AppError(413, 'WIKI_TOO_LARGE', 'The IQ.wiki article is too large.');
+  const html = await readResponseText(response);
   const extracted = extractWikiText(html);
   if (extracted.rawText.length < 180) {
     throw new AppError(422, 'WIKI_TEXT_MISSING', 'Not enough article text could be extracted.');
@@ -153,6 +139,33 @@ async function loadWiki(rawUrl) {
   };
   wikiCache.set(url, wiki, 600000);
   return wiki;
+}
+
+export async function readResponseText(response, maxBytes = 2000000) {
+  const tooLarge = () => new AppError(413, 'WIKI_TOO_LARGE', 'The IQ.wiki article is too large.');
+  if (!response.body?.getReader) {
+    const text = await response.text();
+    if (Buffer.byteLength(text, 'utf8') > maxBytes) throw tooLarge();
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxBytes) throw tooLarge();
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  }
 }
 
 function buildPrompt(action, wiki, options) {
@@ -194,6 +207,7 @@ export async function callOpenRouter(
   for (const [index, model] of models.entries()) {
     const remainingModels = models.length - index;
     const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
     const timeoutMs = Math.min(
       MAX_FREE_MODEL_TIMEOUT_MS,
       Math.max(1000, Math.floor(remainingMs / remainingModels))
@@ -319,13 +333,13 @@ export function buildOpenRouterPayload(prompt, model) {
   };
 }
 
-async function requestOpenRouter(prompt, host, model, timeoutMs) {
+async function requestOpenRouter(prompt, _host, model, timeoutMs) {
   const response = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
       'Content-Type': 'application/json',
-      'HTTP-Referer': `https://${host || 'iq.wiki'}`,
+      'HTTP-Referer': getOpenRouterReferer(),
       'X-Title': 'IQ.wiki Video Studio'
     },
     body: JSON.stringify(buildOpenRouterPayload(prompt, model)),
