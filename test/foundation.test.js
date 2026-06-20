@@ -5,6 +5,7 @@ import {
   TTLCache,
   assertFreeModel,
   assertIqWikiUrl,
+  assertJsonContentType,
   cleanText,
   createRateLimiter,
   extractModelContent,
@@ -13,7 +14,8 @@ import {
   getOpenRouterReferer,
   readJsonBody,
   readPositiveInteger,
-  parseStrictJson
+  parseStrictJson,
+  readBoundedResponseText,
 } from '../lib/foundation.js';
 import {
   buildGenerationCacheKey,
@@ -488,4 +490,33 @@ test('normalizes free-provider response formats', () => {
   }), '{"ok":true}');
   assert.throws(() => parseStrictJson([]), /invalid data/);
   assert.throws(() => extractModelContent({ choices: [] }), /no usable content/);
+});
+
+test('requires JSON content type for raw request bodies', () => {
+  assert.doesNotThrow(() => assertJsonContentType({
+    body: { url: 'https://iq.wiki/wiki/solana' },
+    headers: {}
+  }));
+  assert.doesNotThrow(() => assertJsonContentType({
+    body: '{"ok":true}',
+    headers: { 'content-type': 'application/problem+json' }
+  }));
+  assert.throws(
+    () => assertJsonContentType({
+      body: '{"ok":true}',
+      headers: { 'content-type': 'text/plain' }
+    }),
+    (error) => error.code === 'UNSUPPORTED_MEDIA_TYPE' && error.status === 415
+  );
+});
+
+test('rejects oversized response bodies before parsing', async () => {
+  await assert.rejects(
+    readBoundedResponseText(new Response('123456789'), 8),
+    RangeError
+  );
+  await assert.rejects(
+    readBoundedResponseText(new Response('ok'), 0),
+    TypeError
+  );
 });

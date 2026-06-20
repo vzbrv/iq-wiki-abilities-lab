@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { getVideoConfig, publicVideoConfig } from '../lib/video/config.js';
 import { VIDEO_DURATION_SECONDS, VIDEO_STYLE } from '../lib/video/profile.js';
 import { MockVideoProvider } from '../lib/video/providers/mock.js';
-import { VideoJobService } from '../lib/video/service.js';
+import { VideoJobService, createVideoService } from '../lib/video/service.js';
 import { sendError } from '../api/video.js';
 
 const input = {
@@ -44,6 +44,10 @@ test('video engine is disabled by default', () => {
   });
 });
 
+test('disabled video engine exposes no actions', () => {
+  assert.deepEqual(publicVideoConfig(getVideoConfig({})).actions, []);
+});
+
 test('mock provider is forbidden in production', () => {
   assert.throws(() => getVideoConfig({
     VIDEO_ENGINE_ENABLED: 'true',
@@ -65,6 +69,33 @@ test('model must be explicitly allowlisted', () => {
     VIDEO_MODEL_ALLOWLIST: 'approved',
     VIDEO_MOCK_ENABLED: 'true'
   }), { code: 'VIDEO_MODEL_BLOCKED' });
+});
+
+test('external providers require explicit spending caps', () => {
+  const env = {
+    VIDEO_ENGINE_ENABLED: 'true',
+    VIDEO_PROVIDER: 'future',
+    VIDEO_PROVIDER_ALLOWLIST: 'future',
+    VIDEO_MODEL: 'future-video-v1',
+    VIDEO_MODEL_ALLOWLIST: 'future-video-v1',
+    VIDEO_API_KEY: 'secret'
+  };
+
+  assert.throws(() => getVideoConfig(env), { code: 'VIDEO_CONFIGURATION_ERROR' });
+  assert.equal(getVideoConfig({
+    ...env,
+    VIDEO_MAX_JOB_USD: '0.50',
+    VIDEO_DAILY_CAP_USD: '5'
+  }).status, 'ready');
+});
+
+test('provider integrations must implement the full lifecycle', () => {
+  assert.throws(
+    () => createVideoService(config({ provider: 'future' }), {
+      future: { async create() { return {}; } }
+    }),
+    { code: 'VIDEO_PROVIDER_NOT_IMPLEMENTED' }
+  );
 });
 
 test('job lifecycle supports polling, playback, cancellation, and retry', async () => {
@@ -171,6 +202,56 @@ test('rejects malformed provider create and polling responses', async () => {
   await assert.rejects(
     invalidPlayback.getJob(playbackJob.id),
     { code: 'VIDEO_PROVIDER_INVALID_RESPONSE' }
+  );
+});
+
+test('provider polling cannot move jobs backwards or reduce progress', async () => {
+  const provider = {
+    polls: 0,
+    async create() {
+      return { providerJobId: 'provider-job', state: 'processing', progress: 60 };
+    },
+    async poll() {
+      this.polls += 1;
+      return this.polls === 1
+        ? { state: 'processing', progress: 20 }
+        : { state: 'queued', progress: 80 };
+    }
+  };
+  const service = new VideoJobService({
+    config: config({ provider: 'future' }),
+    provider
+  });
+  const created = await service.createJob(input);
+
+  assert.equal((await service.getJob(created.id)).progress, 60);
+  await assert.rejects(
+    service.getJob(created.id),
+    { code: 'VIDEO_PROVIDER_INVALID_RESPONSE' }
+  );
+});
+
+test('rejects oversized video plan fields', async () => {
+  const service = new VideoJobService({ config: config(), provider: new MockVideoProvider() });
+  await assert.rejects(
+    service.createJob({
+      ...input,
+      article: { ...input.article, title: 'x'.repeat(201) }
+    }),
+    { code: 'INVALID_VIDEO_INPUT' }
+  );
+  await assert.rejects(
+    service.createJob({
+      ...input,
+      scenario: {
+        ...input.scenario,
+        scenes: input.scenario.scenes.map((scene) => ({
+          ...scene,
+          visual: 'x'.repeat(1001)
+        }))
+      }
+    }),
+    { code: 'INVALID_VIDEO_INPUT' }
   );
 });
 

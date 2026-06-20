@@ -2,12 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   AppError,
   TTLCache,
+  assertJsonContentType,
   assertIqWikiUrl,
   createRateLimiter,
   extractModelContent,
   extractWikiText,
   getFreeModelCandidates,
   getOpenRouterReferer,
+  readBoundedResponseText,
   readJsonBody,
   readPositiveInteger,
   parseStrictJson
@@ -51,6 +53,7 @@ export default async function handler(req, res) {
 
   const startedAt = Date.now();
   try {
+    assertJsonContentType(req);
     const body = await readJsonBody(req);
     const action = body.action === 'short_video' ? 'video_scenario' : body.action;
     const client = getClientId(req);
@@ -165,28 +168,12 @@ async function loadWiki(rawUrl) {
 }
 
 export async function readResponseText(response, maxBytes = 2000000) {
-  const tooLarge = () => new AppError(413, 'WIKI_TOO_LARGE', 'The IQ.wiki article is too large.');
-  if (!response.body?.getReader) {
-    const text = await response.text();
-    if (Buffer.byteLength(text, 'utf8') > maxBytes) throw tooLarge();
-    return text;
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let bytes = 0;
-  let text = '';
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      bytes += value.byteLength;
-      if (bytes > maxBytes) throw tooLarge();
-      text += decoder.decode(value, { stream: true });
-    }
-    return text + decoder.decode();
+    return await readBoundedResponseText(response, maxBytes);
   } catch (error) {
-    await reader.cancel().catch(() => {});
+    if (error instanceof RangeError) {
+      throw new AppError(413, 'WIKI_TOO_LARGE', 'The IQ.wiki article is too large.');
+    }
     throw error;
   }
 }
@@ -455,7 +442,7 @@ async function requestOpenRouter(prompt, _host, model, timeoutMs) {
   }
   let data;
   try {
-    data = await response.json();
+    data = JSON.parse(await readBoundedResponseText(response, 512000));
   } catch {
     throw new AppError(
       502,
@@ -481,7 +468,10 @@ function enforceRateLimit(result) {
 }
 
 function getClientId(req) {
-  return String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown').split(',')[0].trim();
+  return String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown')
+    .split(',')[0]
+    .trim()
+    .slice(0, 128) || 'unknown';
 }
 
 export function sendError(res, requestId, error) {

@@ -82,6 +82,17 @@ test("malformed article payload returns a client error", () => {
   );
 });
 
+test("rejects oversized article titles instead of silently changing them", () => {
+  assert.throws(
+    () => createArticleSnapshot({
+      title: "x".repeat(201),
+      url: "https://iq.wiki/wiki/example",
+      rawText: "Readable article content for the video library. ".repeat(10),
+    }),
+    (error) => error.code === "INVALID_ARTICLE" && error.status === 400,
+  );
+});
+
 test("malformed video asset payload returns a client error", async () => {
   const service = new VideoLibraryService(new MemoryVideoLibraryStore());
   await assert.rejects(
@@ -158,7 +169,11 @@ test("conflicting writes are retried against the latest article revision", async
         if (current) {
           this.records.set(key, {
             ...current,
-            materialRevision: "newer-revision",
+            materialRevision: "b".repeat(64),
+            materialSnapshot: {
+              ...current.materialSnapshot,
+              exactHash: "b".repeat(64),
+            },
             state: "needs_generation",
             asset: null,
           });
@@ -187,6 +202,64 @@ test("conflicting writes are retried against the latest article revision", async
       playbackUrl: "https://cdn.example.com/stale.mp4",
     }),
     (error) => error.code === "STALE_VIDEO_REVISION",
+  );
+});
+
+test("rejects corrupted ready records instead of serving stale assets", async () => {
+  const store = new MemoryVideoLibraryStore();
+  const service = new VideoLibraryService(store);
+  const article = {
+    title: "Corrupted record",
+    url: "https://iq.wiki/wiki/corrupted-record",
+    rawText: "A factual article body with enough readable words for snapshot validation. ".repeat(8),
+  };
+  const synced = await service.syncArticle(article);
+  await service.publishAsset({
+    url: article.url,
+    revision: synced.revision,
+    playbackUrl: "https://cdn.example.com/corrupted.mp4",
+  });
+
+  const key = [...store.records.keys()][0];
+  store.records.get(key).asset.revision = "wrong-revision";
+
+  await assert.rejects(
+    service.lookup(article.url),
+    (error) => error.code === "VIDEO_LIBRARY_UNAVAILABLE" && error.status === 503,
+  );
+});
+
+test("returned library records cannot mutate stored state", async () => {
+  const service = new VideoLibraryService(new MemoryVideoLibraryStore());
+  const article = {
+    title: "Defensive copy",
+    url: "https://iq.wiki/wiki/defensive-copy",
+    rawText: "A factual article body with enough readable words for snapshot validation. ".repeat(8),
+  };
+  const synced = await service.syncArticle(article);
+  const published = await service.publishAsset({
+    url: article.url,
+    revision: synced.revision,
+    playbackUrl: "https://cdn.example.com/defensive-copy.mp4",
+  });
+  published.article.title = "Changed outside";
+  published.asset.playbackUrl = "https://attacker.example.com/video.mp4";
+
+  const stored = await service.lookup(article.url);
+  assert.equal(stored.article.title, article.title);
+  assert.equal(stored.asset.playbackUrl, "https://cdn.example.com/defensive-copy.mp4");
+});
+
+test("REST library rejects oversized upstream responses", async () => {
+  const store = new RestVideoLibraryStore({
+    url: "https://storage.example.com",
+    token: "token",
+    fetchImpl: async () => new Response("x".repeat(512001)),
+  });
+
+  await assert.rejects(
+    store.get("video:example"),
+    (error) => error.code === "VIDEO_LIBRARY_UNAVAILABLE" && error.status === 503,
   );
 });
 
