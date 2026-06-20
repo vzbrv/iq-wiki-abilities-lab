@@ -30,6 +30,7 @@ const FREE_GENERATION_BUDGET_MS = 50000;
 const ROUTER_TIMEOUT_MS = 24000;
 const FALLBACK_TIMEOUT_MS = 12000;
 const GENERATION_ARTICLE_MAX_CHARS = 14000;
+const VIDEO_SCENE_TIMES = ['0-5s', '5-10s', '10-15s'];
 const wikiCache = new TTLCache(100);
 const resultCache = new TTLCache(100);
 const generationInflight = new Map();
@@ -287,9 +288,13 @@ export function validateGeneratedResult(action, value) {
 
   if (action === 'video_scenario') {
     const rawScenes = value.scenes ?? value.scene_plan ?? value.scenePlan ?? value.storyboard ?? value.shots;
-    const scenes = requiredArray(rawScenes, 10).map((scene) => {
+    const scenes = requiredArray(
+      rawScenes,
+      VIDEO_SCENE_TIMES.length,
+      VIDEO_SCENE_TIMES.length
+    ).map((scene, index) => {
       return {
-        time: optionalText(scene?.time ?? scene?.timestamp, 30),
+        time: VIDEO_SCENE_TIMES[index],
         visual: requiredText(
           scene?.visual ?? scene?.visual_direction ?? scene?.description ?? scene?.scene ?? scene?.visuals,
           500
@@ -355,8 +360,8 @@ export function validateGeneratedResult(action, value) {
   invalidModelResult();
 }
 
-function requiredArray(value, maxLength) {
-  if (!Array.isArray(value) || value.length === 0) invalidModelResult();
+function requiredArray(value, maxLength, minLength = 1) {
+  if (!Array.isArray(value) || value.length < minLength) invalidModelResult();
   return value.slice(0, maxLength);
 }
 
@@ -478,12 +483,13 @@ function getClientId(req) {
   return String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown').split(',')[0].trim();
 }
 
-function sendError(res, requestId, error) {
-  const status = error.status || 500;
+export function sendError(res, requestId, error) {
+  const knownError = error instanceof AppError;
+  const status = knownError ? error.status : 500;
   return res.status(status).json({
-    error: status === 500 ? 'Unexpected server error.' : error.message,
-    code: error.code || 'INTERNAL_ERROR',
-    retryable: Boolean(error.retryable),
+    error: knownError ? error.message : 'Unexpected server error.',
+    code: knownError ? error.code : 'INTERNAL_ERROR',
+    retryable: knownError && Boolean(error.retryable),
     requestId
   });
 }

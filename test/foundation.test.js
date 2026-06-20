@@ -22,8 +22,13 @@ import {
   getConfiguredModels,
   readResponseText,
   reuseInflight,
+  sendError,
   validateGeneratedResult
 } from '../api/generate.js';
+
+function buildScenes(factory) {
+  return Array.from({ length: 3 }, (_, index) => factory(index));
+}
 
 test('hardcodes the 15-second cinematic explainer profile', () => {
   const prompt = buildPrompt('video_scenario', {
@@ -229,26 +234,27 @@ test('validates complete grounded video plans', () => {
   const plan = validateGeneratedResult('video_scenario', {
     hooks: ['Hook'],
     voiceover: 'Narration',
-    scenes: [{
-      time: '0-3s',
-      visual: 'Show the protocol interface',
+    scenes: buildScenes((index) => ({
+      time: 'wrong',
+      visual: `Show the protocol interface ${index + 1}`,
       caption: 'Protocol launch',
       voiceover: 'Scene narration',
-      source_fact: 'The article says the protocol launched.'
-    }],
+      source_fact: `The article fact ${index + 1}.`
+    })),
     cta: 'Read more'
   });
-  assert.equal(plan.scenes[0].visual, 'Show the protocol interface');
+  assert.equal(plan.scenes[0].visual, 'Show the protocol interface 1');
+  assert.deepEqual(plan.scenes.map((scene) => scene.time), ['0-5s', '5-10s', '10-15s']);
   const normalized = validateGeneratedResult('video_scenario', {
     hook: 'Hook',
     narration: Array.from({ length: 50 }, () => 'word').join(' '),
-    scenes: [{
+    scenes: buildScenes(() => ({
       timestamp: '0-15s',
       visual_direction: 'Show the protocol interface',
       on_screen_text: 'one two three four five six',
       narration: 'Scene narration',
       fact: 'The article says the protocol launched.'
-    }]
+    }))
   });
   assert.deepEqual(normalized.hooks, ['Hook']);
   assert.equal(normalized.voiceover.split(' ').length, 42);
@@ -256,22 +262,22 @@ test('validates complete grounded video plans', () => {
   const derivedNarration = validateGeneratedResult('video_scenario', {
     hooks: ['Hook'],
     voiceover: '',
-    scenes: [{
+    scenes: buildScenes((index) => ({
       visual: 'Show the protocol interface',
-      voiceover: 'Use this scene narration',
+      voiceover: index === 0 ? 'Use this scene narration' : '',
       source_fact: 'The article says the protocol launched.'
-    }]
+    }))
   });
   assert.equal(derivedNarration.voiceover, 'Use this scene narration');
   const aliases = validateGeneratedResult('video_scenario', {
     script: 'A concise grounded narration for this article',
-    storyboard: [{
+    storyboard: buildScenes(() => ({
       timestamp: '0-15s',
       description: 'Show topic-specific footage',
       text: 'Simple label',
       script: 'Scene narration',
       supporting_fact: 'Article fact'
-    }]
+    }))
   });
   assert.deepEqual(aliases.hooks, ['A concise grounded narration for this article']);
   assert.equal(aliases.scenes[0].visual, 'Show topic-specific footage');
@@ -288,10 +294,22 @@ test('validates complete grounded video plans', () => {
     () => validateGeneratedResult('video_scenario', {
       hooks: ['Hook'],
       voiceover: 'Narration',
-      scenes: [{
+      scenes: buildScenes(() => ({
         visual: 'Show the protocol interface',
         voiceover: 'Scene narration'
-      }]
+      }))
+    }),
+    (error) => error.code === 'INVALID_MODEL_RESPONSE'
+  );
+  assert.throws(
+    () => validateGeneratedResult('video_scenario', {
+      hooks: ['Hook'],
+      voiceover: 'Narration',
+      scenes: buildScenes((index) => ({
+        visual: 'Show the protocol interface',
+        voiceover: 'Scene narration',
+        source_fact: 'Article fact'
+      })).slice(0, 2)
     }),
     (error) => error.code === 'INVALID_MODEL_RESPONSE'
   );
@@ -310,11 +328,11 @@ test('fails over when a free model returns the wrong result shape', async () => 
         : {
             hooks: ['Hook'],
             voiceover: 'Narration',
-            scenes: [{
+            scenes: buildScenes(() => ({
               visual: 'Topic visual',
               voiceover: 'Scene narration',
               source_fact: 'Article fact'
-            }]
+            }))
           };
     },
     (value) => validateGeneratedResult('video_scenario', value)
@@ -337,6 +355,36 @@ test('generation cache keys change with article content', () => {
     models
   );
   assert.notEqual(first, second);
+});
+
+test('unexpected generation errors cannot control the public response', () => {
+  const response = {
+    statusCode: 0,
+    body: null,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(body) {
+      this.body = body;
+      return body;
+    }
+  };
+  const error = Object.assign(new Error('secret detail'), {
+    status: 400,
+    code: 'SECRET_CODE',
+    retryable: true
+  });
+
+  sendError(response, 'request-id', error);
+
+  assert.equal(response.statusCode, 500);
+  assert.deepEqual(response.body, {
+    error: 'Unexpected server error.',
+    code: 'INTERNAL_ERROR',
+    retryable: false,
+    requestId: 'request-id'
+  });
 });
 
 test('shares concurrent generation and clears completed requests', async () => {

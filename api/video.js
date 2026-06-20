@@ -103,12 +103,13 @@ function assertLibraryToken(req) {
   }
 }
 
-function sendError(res, requestId, error) {
-  const status = error.status || 500;
+export function sendError(res, requestId, error) {
+  const knownError = error instanceof AppError;
+  const status = knownError ? error.status : 500;
   return res.status(status).json({
-    error: status === 500 ? 'Unexpected server error.' : error.message,
-    code: error.code || 'INTERNAL_ERROR',
-    retryable: Boolean(error.retryable),
+    error: knownError ? error.message : 'Unexpected server error.',
+    code: knownError ? error.code : 'INTERNAL_ERROR',
+    retryable: knownError && Boolean(error.retryable),
     requestId
   });
 }
