@@ -6,6 +6,7 @@ import {
   VideoLibraryService,
   classifyArticleChange,
   createArticleSnapshot,
+  createVideoLibraryStore,
 } from "../lib/video/library.js";
 
 function snapshot(overrides = {}) {
@@ -55,6 +56,37 @@ test("malformed video asset payload returns a client error", async () => {
   await assert.rejects(
     service.publishAsset(null),
     (error) => error.code === "INVALID_VIDEO_ASSET" && error.status === 400,
+  );
+});
+
+test("unconfigured production library reads as empty but rejects writes", async () => {
+  const service = new VideoLibraryService(createVideoLibraryStore({
+    NODE_ENV: "production",
+  }));
+  const url = "https://iq.wiki/wiki/solana";
+
+  assert.deepEqual(await service.lookup(url), {
+    state: "missing",
+    article: { url },
+  });
+
+  await assert.rejects(
+    service.syncArticle({
+      title: "Solana",
+      url,
+      rawText: "Solana is a blockchain network designed for fast transactions. ".repeat(20),
+    }),
+    (error) => error.code === "VIDEO_LIBRARY_NOT_CONFIGURED" && error.status === 503,
+  );
+});
+
+test("partial production library configuration remains fatal", () => {
+  assert.throws(
+    () => createVideoLibraryStore({
+      NODE_ENV: "production",
+      VIDEO_LIBRARY_REST_URL: "https://storage.example.com",
+    }),
+    (error) => error.code === "VIDEO_LIBRARY_CONFIGURATION_ERROR" && error.status === 503,
   );
 });
 
