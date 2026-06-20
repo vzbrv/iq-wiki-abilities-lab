@@ -9,9 +9,30 @@ import {
   extractModelContent,
   extractWikiText,
   getFreeModelCandidates,
+  getOpenRouterReferer,
+  readJsonBody,
   parseStrictJson
 } from '../lib/foundation.js';
-import { callOpenRouter, validateGeneratedResult } from '../api/generate.js';
+import {
+  buildPrompt,
+  buildOpenRouterPayload,
+  callOpenRouter,
+  getConfiguredModels,
+  readResponseText,
+  validateGeneratedResult
+} from '../api/generate.js';
+
+test('hardcodes the 15-second cinematic explainer profile', () => {
+  const prompt = buildPrompt('video_scenario', {
+    title: 'Solana',
+    url: 'https://iq.wiki/wiki/solana',
+    rawText: 'Solana is a blockchain designed for fast transactions.'
+  });
+
+  assert.match(prompt, /15-second/);
+  assert.match(prompt, /cinematic and explanatory, easy to understand, and entertaining/);
+  assert.doesNotMatch(prompt, /20-second|30-second|documentary/);
+});
 
 test('accepts direct HTTPS IQ.wiki article URLs', () => {
   assert.equal(
@@ -20,9 +41,59 @@ test('accepts direct HTTPS IQ.wiki article URLs', () => {
   );
 });
 
+test('accepts localized IQ.wiki article URLs', () => {
+  assert.equal(
+    assertIqWikiUrl('https://iq.wiki/kr/wiki/ethereum?utm_source=test'),
+    'https://iq.wiki/kr/wiki/ethereum'
+  );
+  assert.equal(
+    assertIqWikiUrl('https://iq.wiki/zh/wiki/bitcoin'),
+    'https://iq.wiki/zh/wiki/bitcoin'
+  );
+});
+
 test('rejects non-IQ.wiki and non-article URLs', () => {
   assert.throws(() => assertIqWikiUrl('https://example.com/wiki/solana'), AppError);
+  assert.throws(() => assertIqWikiUrl('https://attacker.iq.wiki/wiki/solana'), AppError);
   assert.throws(() => assertIqWikiUrl('https://iq.wiki/rank/cryptocurrencies'), AppError);
+  assert.throws(() => assertIqWikiUrl('https://iq.wiki/wiki/'), AppError);
+});
+
+test('enforces JSON object type and size after platform parsing', async () => {
+  assert.deepEqual(await readJsonBody({ body: { action: 'load_wiki' } }), { action: 'load_wiki' });
+  await assert.rejects(readJsonBody({ body: [] }), { code: 'INVALID_JSON' });
+  await assert.rejects(readJsonBody({ body: '[]' }), { code: 'INVALID_JSON' });
+  await assert.rejects(
+    readJsonBody({ body: { value: 'x'.repeat(70000) } }),
+    { code: 'REQUEST_TOO_LARGE' }
+  );
+});
+
+test('uses only a configured trusted URL for OpenRouter attribution', () => {
+  assert.equal(getOpenRouterReferer({}), 'https://iq.wiki');
+  assert.equal(
+    getOpenRouterReferer({ VERCEL_URL: 'iq-wiki.example' }),
+    'https://iq-wiki.example'
+  );
+  assert.equal(
+    getOpenRouterReferer({ PUBLIC_APP_URL: 'http://attacker.example' }),
+    'https://iq.wiki'
+  );
+});
+
+test('stops reading IQ.wiki responses at the byte limit', async () => {
+  assert.equal(await readResponseText(new Response('article'), 7), 'article');
+  await assert.rejects(
+    readResponseText(new Response('éééé'), 7),
+    { code: 'WIKI_TOO_LARGE', status: 413 }
+  );
+});
+
+test('does not require provider-specific JSON mode from free models', () => {
+  const payload = buildOpenRouterPayload('prompt', 'openrouter/free');
+  assert.equal(payload.model, 'openrouter/free');
+  assert.equal('response_format' in payload, false);
+  assert.match(payload.messages[0].content, /JSON object/);
 });
 
 test('blocks paid OpenRouter models', () => {
@@ -40,6 +111,16 @@ test('builds a deduplicated free-only model list', () => {
     () => getFreeModelCandidates('openrouter/free,google/gemini-pro'),
     /not free/
   );
+});
+
+test('keeps built-in free fallbacks when models are configured', () => {
+  const models = getConfiguredModels({
+    OPENROUTER_MODELS: 'meta-llama/custom-model:free'
+  });
+  assert.equal(models[0], 'meta-llama/custom-model:free');
+  assert.ok(models.includes('openai/gpt-oss-20b:free'));
+  assert.ok(models.includes('openrouter/free'));
+  assert.equal(models.every((model) => model === 'openrouter/free' || model.endsWith(':free')), true);
 });
 
 test('fails over between free models without adding a paid model', async () => {
@@ -61,6 +142,36 @@ test('fails over between free models without adding a paid model', async () => {
   });
 });
 
+test('tries every free model and distinguishes non-quota failures', async () => {
+  const models = [
+    'openai/gpt-oss-20b:free',
+    'qwen/qwen3-next-80b-a3b-instruct:free',
+    'openrouter/free'
+  ];
+  const calls = [];
+  await assert.rejects(
+    callOpenRouter('prompt', 'example.com', models, async (_prompt, _host, model, timeoutMs) => {
+      calls.push({ model, timeoutMs });
+      throw new AppError(504, 'FREE_MODEL_TIMEOUT', 'timeout', true);
+    }),
+    (error) => error.code === 'FREE_MODELS_UNAVAILABLE' && error.status === 503
+  );
+  assert.deepEqual(calls.map(({ model }) => model), models);
+  assert.equal(calls.every(({ timeoutMs }) => timeoutMs >= 1000 && timeoutMs <= 12000), true);
+});
+
+test('reports capacity only when every free model rejects for quota', async () => {
+  await assert.rejects(
+    callOpenRouter('prompt', 'example.com', [
+      'openai/gpt-oss-20b:free',
+      'openrouter/free'
+    ], async () => {
+      throw new AppError(429, 'FREE_MODEL_QUOTA', 'capacity', true);
+    }),
+    (error) => error.code === 'FREE_MODELS_EXHAUSTED' && error.status === 429
+  );
+});
+
 test('cache expires and rate limiter blocks excess requests', async () => {
   const cache = new TTLCache();
   cache.set('key', 'value', 5);
@@ -70,6 +181,14 @@ test('cache expires and rate limiter blocks excess requests', async () => {
   const limit = createRateLimiter({ limit: 1, windowMs: 1000 });
   assert.equal(limit('client').allowed, true);
   assert.equal(limit('client').allowed, false);
+});
+
+test('rate limiter bounds retained visitor entries', () => {
+  const limit = createRateLimiter({ limit: 1, windowMs: 60_000, maxEntries: 2 });
+  assert.equal(limit('visitor-a').allowed, true);
+  assert.equal(limit('visitor-b').allowed, true);
+  assert.equal(limit('visitor-c').allowed, true);
+  assert.equal(limit('visitor-a').allowed, true);
 });
 
 test('updating a full cache does not evict another entry', () => {
@@ -102,6 +221,36 @@ test('validates complete grounded video plans', () => {
       scenes: []
     }),
     /incomplete answer/
+  );
+  assert.throws(
+    () => validateGeneratedResult('video_scenario', {
+      hooks: ['Hook'],
+      voiceover: Array.from({ length: 43 }, () => 'word').join(' '),
+      scenes: [{
+        time: '0-15s',
+        visual: 'Show the protocol interface',
+        caption: 'Protocol launch',
+        voiceover: 'Scene narration',
+        source_fact: 'The article says the protocol launched.'
+      }],
+      cta: 'Read more'
+    }),
+    (error) => error.code === 'INVALID_MODEL_RESPONSE'
+  );
+  assert.throws(
+    () => validateGeneratedResult('video_scenario', {
+      hooks: ['Hook'],
+      voiceover: 'Narration',
+      scenes: [{
+        time: '0-15s',
+        visual: 'Show the protocol interface',
+        caption: 'one two three four five six',
+        voiceover: 'Scene narration',
+        source_fact: 'The article says the protocol launched.'
+      }],
+      cta: 'Read more'
+    }),
+    (error) => error.code === 'INVALID_MODEL_RESPONSE'
   );
 });
 

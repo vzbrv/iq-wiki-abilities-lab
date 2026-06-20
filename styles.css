@@ -28,8 +28,8 @@ body {
   letter-spacing: 0;
 }
 
-button, input, select { font: inherit; }
-button, select { cursor: pointer; }
+button, input { font: inherit; }
+button { cursor: pointer; }
 
 .site-header {
   height: 64px;
@@ -128,11 +128,9 @@ h1 {
   padding: 24px;
 }
 
-label, legend { display: block; font-size: 14px; font-weight: 700; }
-fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
-legend { width: 100%; }
+label { display: block; font-size: 14px; font-weight: 700; }
 
-input[type="url"], select {
+input[type="url"] {
   width: 100%;
   height: 46px;
   margin-top: 8px;
@@ -154,25 +152,18 @@ input[type="url"], select {
   font-weight: 600;
 }
 
-.segmented { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 8px; }
-.segmented label { position: relative; }
-.segmented input { position: absolute; opacity: 0; }
-.segmented span {
+.fixed-profile {
   display: grid;
-  height: 42px;
-  place-items: center;
-  border: 1px solid #cbd5e1;
+  gap: 8px;
+  padding: 14px;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   color: #475569;
   font-size: 13px;
 }
-.segmented label:first-child span { border-radius: 6px 0 0 6px; }
-.segmented label:last-child span { border-radius: 0 6px 6px 0; }
-.segmented label + label span { border-left: 0; }
-.segmented input:checked + span {
-  background: #fff1f7;
-  border-color: var(--pink);
-  color: var(--pink-dark);
-}
+.fixed-profile p { margin: 0; }
+.fixed-profile strong { color: var(--ink); }
 
 .primary-button, .video-button {
   min-height: 48px;
@@ -260,7 +251,7 @@ input[type="url"], select {
 
 footer { padding: 0 16px 28px; color: var(--muted); font-size: 11px; text-align: center; }
 
-button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible {
+button:focus-visible, input:focus-visible, a:focus-visible {
   outline: 3px solid rgba(255, 92, 170, .35);
   outline-offset: 2px;
 }

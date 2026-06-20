@@ -1,11 +1,13 @@
 # IQ.wiki Video Studio
 
-Visitor-ready studio that converts a live IQ.wiki article into a grounded 15–30 second production package:
+Visitor-ready studio that converts a live IQ.wiki article into a grounded, fixed 15-second production package:
 
 - complete narration
 - opening hooks
 - topic-specific scene directions
 - on-screen captions and source facts
+
+The production profile is fixed to a cinematic explainer that is clear, easy to follow, and entertaining.
 
 The script and scene plan use OpenRouter free models only. The server rejects any model without the `:free` suffix, except OpenRouter's `openrouter/free` router. It never falls back to a paid model.
 
@@ -21,17 +23,18 @@ OPENROUTER_API_KEY=... npm run dev
 Optional settings:
 
 ```bash
-# Full ordered allowlist. Every entry must be openrouter/free or end in :free.
+# Preferred models. Every entry must be openrouter/free or end in :free.
 OPENROUTER_MODELS=openrouter/free,openai/gpt-oss-20b:free
 ALLOWED_ORIGINS=https://your-site.example
 LOAD_RATE_LIMIT=20
 GENERATE_RATE_LIMIT=8
 ```
 
-If `OPENROUTER_MODELS` is unset, the app tries the legacy `OPENROUTER_MODEL`
-first, then its built-in free-only fallback list. It never attempts a paid model.
+Configured models are tried first, followed by the built-in free-only fallback
+list. `OPENROUTER_MODEL` remains supported when `OPENROUTER_MODELS` is unset.
+The app validates every candidate and never attempts a paid model.
 
-Use `?embed=1` for the compact embedded layout. Use `?api=https://api.example` only when the static frontend and API are hosted separately.
+Use `?embed=1` for the compact embedded layout. Use an HTTPS `?api=https://api.example` only when the static frontend and API are hosted separately.
 
 ## Verify
 

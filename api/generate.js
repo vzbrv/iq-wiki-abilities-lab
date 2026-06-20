@@ -7,16 +7,27 @@ import {
   extractModelContent,
   extractWikiText,
   getFreeModelCandidates,
+  getOpenRouterReferer,
+  readJsonBody,
   parseStrictJson
 } from '../lib/foundation.js';
+import {
+  VIDEO_DURATION_SECONDS,
+  VIDEO_MAX_NARRATION_WORDS,
+  VIDEO_STYLE,
+  VIDEO_STYLE_DESCRIPTION
+} from '../lib/video/profile.js';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_FREE_MODELS = [
-  'openrouter/free',
-  'qwen/qwen3-next-80b-a3b-instruct:free',
   'openai/gpt-oss-20b:free',
-  'google/gemma-4-26b-a4b-it:free'
+  'qwen/qwen3-next-80b-a3b-instruct:free',
+  'google/gemma-4-26b-a4b-it:free',
+  'meta-llama/llama-3.3-70b-instruct:free',
+  'openrouter/free'
 ];
+const FREE_GENERATION_BUDGET_MS = 50000;
+const MAX_FREE_MODEL_TIMEOUT_MS = 12000;
 const wikiCache = new TTLCache(100);
 const resultCache = new TTLCache(100);
 const loadLimit = createRateLimiter({ limit: Number(process.env.LOAD_RATE_LIMIT || 20), windowMs: 300000 });
@@ -30,12 +41,12 @@ export default async function handler(req, res) {
 
   const startedAt = Date.now();
   try {
-    const body = await readBody(req);
+    const body = await readJsonBody(req);
     const action = body.action === 'short_video' ? 'video_scenario' : body.action;
     const client = getClientId(req);
-    enforceRateLimit(action === 'load_wiki' ? loadLimit(client) : generateLimit(client));
 
     if (action === 'load_wiki') {
+      enforceRateLimit(loadLimit(client));
       const wiki = await loadWiki(body.url);
       log('request_complete', { requestId, action, status: 200, durationMs: Date.now() - startedAt });
       return res.status(200).json({ wiki, requestId });
@@ -43,6 +54,7 @@ export default async function handler(req, res) {
     if (!['video_scenario', 'funding_timeline', 'crypto_lore'].includes(action)) {
       throw new AppError(400, 'INVALID_ACTION', 'Invalid ability type.');
     }
+    enforceRateLimit(generateLimit(client));
 
     const wiki = await loadWiki(body.url);
     const models = getConfiguredModels();
@@ -50,15 +62,16 @@ export default async function handler(req, res) {
       throw new AppError(503, 'CONFIGURATION_ERROR', 'Free AI generation is not configured.');
     }
 
-    const cacheKey = JSON.stringify([action, wiki.url, body.options || {}, models]);
+    const cacheKey = JSON.stringify([action, wiki.url, models]);
     let generated = resultCache.get(cacheKey);
     if (!generated) {
       generated = await callOpenRouter(
-        buildPrompt(action, wiki, body.options || {}),
+        buildPrompt(action, wiki),
         req.headers.host,
         models,
         requestOpenRouter,
-        (value) => validateGeneratedResult(action, value)
+        (value) => validateGeneratedResult(action, value),
+        requestId
       );
       resultCache.set(cacheKey, generated, 900000);
     }
@@ -72,7 +85,13 @@ export default async function handler(req, res) {
       provider: 'openrouter',
       freeOnly: true,
       pipeline: action === 'video_scenario' ? {
-        scenario: { provider: 'openrouter', model, freeOnly: true },
+        scenario: {
+          provider: 'openrouter',
+          model,
+          freeOnly: true,
+          durationSeconds: VIDEO_DURATION_SECONDS,
+          style: VIDEO_STYLE
+        },
         video: { provider: null, model: null, configured: false, status: 'not_configured' }
       } : undefined,
       requestId
@@ -96,22 +115,7 @@ function setHeaders(req, res, requestId) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Vary', 'Origin');
   res.setHeader('X-Request-Id', requestId);
-}
-
-async function readBody(req) {
-  if (req.body && typeof req.body === 'object') return req.body;
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > 65536) throw new AppError(413, 'REQUEST_TOO_LARGE', 'Request is too large.');
-    chunks.push(chunk);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-  } catch {
-    throw new AppError(400, 'INVALID_JSON', 'Request body must be valid JSON.');
-  }
+  res.setHeader('Cache-Control', 'no-store');
 }
 
 async function loadWiki(rawUrl) {
@@ -134,8 +138,7 @@ async function loadWiki(rawUrl) {
   if (!type.includes('text/html')) throw new AppError(422, 'INVALID_WIKI_CONTENT', 'The URL did not return an HTML article.');
   const declaredSize = Number(response.headers.get('content-length') || 0);
   if (declaredSize > 2000000) throw new AppError(413, 'WIKI_TOO_LARGE', 'The IQ.wiki article is too large.');
-  const html = await response.text();
-  if (html.length > 2000000) throw new AppError(413, 'WIKI_TOO_LARGE', 'The IQ.wiki article is too large.');
+  const html = await readResponseText(response);
   const extracted = extractWikiText(html);
   if (extracted.rawText.length < 180) {
     throw new AppError(422, 'WIKI_TEXT_MISSING', 'Not enough article text could be extracted.');
@@ -151,19 +154,45 @@ async function loadWiki(rawUrl) {
   return wiki;
 }
 
-function buildPrompt(action, wiki, options) {
+export async function readResponseText(response, maxBytes = 2000000) {
+  const tooLarge = () => new AppError(413, 'WIKI_TOO_LARGE', 'The IQ.wiki article is too large.');
+  if (!response.body?.getReader) {
+    const text = await response.text();
+    if (Buffer.byteLength(text, 'utf8') > maxBytes) throw tooLarge();
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxBytes) throw tooLarge();
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  }
+}
+
+export function buildPrompt(action, wiki) {
   const shared = `Use only the IQ.wiki article below. Never invent facts. Return strict JSON only.
 Title: ${wiki.title}
 URL: ${wiki.url}
 Article:
-${wiki.rawText}`;
+  ${wiki.rawText}`;
   if (action === 'video_scenario') {
-    const duration = [15, 20, 30].includes(Number(options.duration)) ? Number(options.duration) : 20;
-    const style = ['documentary', 'cinematic', 'technical', 'social'].includes(options.style)
-      ? options.style : 'documentary';
     return `${shared}
-Create a grounded ${duration}-second ${style} vertical video production plan.
+Create a grounded ${VIDEO_DURATION_SECONDS}-second vertical video production plan.
+The fixed style is ${VIDEO_STYLE_DESCRIPTION}. Keep it accurate, energetic, visually specific, and non-sensational.
 Return {"hooks":["five short hooks"],"voiceover":"complete narration","scenes":[{"time":"0-3s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"scene narration","source_fact":"exact article fact"}],"cta":"short IQ.wiki CTA"}.
+Keep the complete voiceover to no more than ${VIDEO_MAX_NARRATION_WORDS} words. Keep all scene voiceovers combined to no more than ${VIDEO_MAX_NARRATION_WORDS} words. Keep every caption to no more than five words.
 Visuals must depict article entities, products, events, places, timelines, metrics, or processes. No random abstract graphics.`;
   }
   if (action === 'funding_timeline') {
@@ -172,10 +201,9 @@ Visuals must depict article entities, products, events, places, timelines, metri
   return `${shared}\nReturn {"title":"story title","chapters":[{"heading":"short heading","body":"grounded story section","source_fact":"article fact"}],"cta":"short IQ.wiki CTA"}.`;
 }
 
-function getConfiguredModels() {
-  const configured = process.env.OPENROUTER_MODELS || process.env.OPENROUTER_MODEL;
-  const defaults = process.env.OPENROUTER_MODELS ? [] : DEFAULT_FREE_MODELS;
-  return getFreeModelCandidates(configured, defaults);
+export function getConfiguredModels(env = process.env) {
+  const configured = env.OPENROUTER_MODELS || env.OPENROUTER_MODEL;
+  return getFreeModelCandidates(configured, DEFAULT_FREE_MODELS);
 }
 
 export async function callOpenRouter(
@@ -183,25 +211,42 @@ export async function callOpenRouter(
   host,
   models,
   request = requestOpenRouter,
-  validate = (value) => value
+  validate = (value) => value,
+  requestId
 ) {
-  let lastError;
-  const deadline = Date.now() + 45000;
-  for (const model of models) {
-    const timeoutMs = Math.min(18000, deadline - Date.now());
-    if (timeoutMs < 1000) break;
+  const failures = [];
+  const deadline = Date.now() + FREE_GENERATION_BUDGET_MS;
+  for (const [index, model] of models.entries()) {
+    const remainingModels = models.length - index;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    const timeoutMs = Math.min(
+      MAX_FREE_MODEL_TIMEOUT_MS,
+      Math.max(1000, Math.floor(remainingMs / remainingModels))
+    );
     try {
       return { result: validate(await request(prompt, host, model, timeoutMs)), model };
     } catch (error) {
       if (!isFreeModelFailure(error)) throw error;
-      lastError = error;
-      log('free_model_failed', { model, code: error.code, status: error.status });
+      failures.push(error);
+      log('free_model_failed', {
+        requestId,
+        model,
+        code: error.code,
+        status: error.status,
+        attempt: index + 1,
+        totalModels: models.length
+      });
     }
   }
+  const quotaOnly = failures.length > 0
+    && failures.every((error) => error.code === 'FREE_MODEL_QUOTA');
   throw new AppError(
-    lastError?.status === 429 ? 429 : 503,
-    'FREE_MODELS_EXHAUSTED',
-    'Free AI capacity is full right now. No paid model was used. Try again later.',
+    quotaOnly ? 429 : 503,
+    quotaOnly ? 'FREE_MODELS_EXHAUSTED' : 'FREE_MODELS_UNAVAILABLE',
+    quotaOnly
+      ? 'Free AI capacity is full right now. No paid model was used. Try again later.'
+      : 'Free AI models could not complete this request. No paid model was used. Try again.',
     true
   );
 }
@@ -210,16 +255,25 @@ export function validateGeneratedResult(action, value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalidModelResult();
 
   if (action === 'video_scenario') {
-    const scenes = requiredArray(value.scenes, 10).map((scene) => ({
-      time: optionalText(scene?.time, 30),
-      visual: requiredText(scene?.visual, 500),
-      caption: optionalText(scene?.caption, 100),
-      voiceover: requiredText(scene?.voiceover, 500),
-      source_fact: requiredText(scene?.source_fact, 500)
-    }));
+    const scenes = requiredArray(value.scenes, 10).map((scene) => {
+      const caption = optionalText(scene?.caption, 100);
+      if (countWords(caption) > 5) invalidModelResult();
+      return {
+        time: optionalText(scene?.time, 30),
+        visual: requiredText(scene?.visual, 500),
+        caption,
+        voiceover: requiredText(scene?.voiceover, 500),
+        source_fact: requiredText(scene?.source_fact, 500)
+      };
+    });
+    const voiceover = requiredText(value.voiceover, 3000);
+    if (countWords(voiceover) > VIDEO_MAX_NARRATION_WORDS) invalidModelResult();
+    if (countWords(scenes.map((scene) => scene.voiceover).join(' ')) > VIDEO_MAX_NARRATION_WORDS) {
+      invalidModelResult();
+    }
     return {
       hooks: requiredArray(value.hooks, 5).map((hook) => requiredText(hook, 160)),
-      voiceover: requiredText(value.voiceover, 3000),
+      voiceover,
       scenes,
       cta: optionalText(value.cta, 200)
     };
@@ -266,6 +320,10 @@ function optionalText(value, maxLength) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
 }
 
+function countWords(value) {
+  return value.trim() ? value.trim().split(/\s+/).length : 0;
+}
+
 function invalidModelResult() {
   throw new AppError(
     502,
@@ -285,28 +343,31 @@ function isFreeModelFailure(error) {
   ].includes(error.code);
 }
 
-async function requestOpenRouter(prompt, host, model, timeoutMs) {
+export function buildOpenRouterPayload(prompt, model) {
+  return {
+    model,
+    messages: [
+      {
+        role: 'system',
+        content: 'Return one complete JSON object only. Do not use Markdown or add explanatory text.'
+      },
+      { role: 'user', content: prompt }
+    ],
+    temperature: 0.2,
+    max_tokens: 1800
+  };
+}
+
+async function requestOpenRouter(prompt, _host, model, timeoutMs) {
   const response = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
       'Content-Type': 'application/json',
-      'HTTP-Referer': `https://${host || 'iq.wiki'}`,
+      'HTTP-Referer': getOpenRouterReferer(),
       'X-Title': 'IQ.wiki Video Studio'
     },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: 'system',
-          content: 'Return one complete JSON object only. Do not use Markdown or add explanatory text.'
-        },
-        { role: 'user', content: prompt }
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.2,
-      max_tokens: 1800
-    }),
+    body: JSON.stringify(buildOpenRouterPayload(prompt, model)),
     signal: AbortSignal.timeout(timeoutMs)
   }).catch((error) => {
     if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {

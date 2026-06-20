@@ -1,5 +1,5 @@
 const params = new URLSearchParams(window.location.search);
-const apiBase = params.get('api')?.replace(/\/$/, '') || '';
+const apiBase = resolveApiBase(params.get('api'));
 const form = document.querySelector('#studioForm');
 const outputPanel = document.querySelector('#outputPanel');
 const emptyState = document.querySelector('#emptyState');
@@ -8,6 +8,19 @@ const result = document.querySelector('#result');
 const submitButton = document.querySelector('#generatePlanBtn');
 
 if (params.get('embed') === '1') document.body.classList.add('embedded');
+
+function resolveApiBase(value) {
+  if (!value) return '';
+  try {
+    const url = new URL(value);
+    const isLocal = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname);
+    if (url.protocol !== 'https:' && !(isLocal && url.protocol === 'http:')) return '';
+    if (url.username || url.password || url.search || url.hash) return '';
+    return `${url.origin}${url.pathname.replace(/\/$/, '')}`;
+  } catch {
+    return '';
+  }
+}
 
 document.querySelectorAll('.sample').forEach((button) => {
   button.addEventListener('click', () => {
@@ -21,7 +34,7 @@ form.addEventListener('submit', async (event) => {
   setLoading(true);
   showStatus('Loading the IQ.wiki article and asking a free AI model…', 'loading');
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60000);
+  const timeout = setTimeout(() => controller.abort(), 75000);
 
   try {
     const response = await fetch(`${apiBase}/api/generate`, {
@@ -29,11 +42,7 @@ form.addEventListener('submit', async (event) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         action: 'video_scenario',
-        url: form.wikiUrl.value.trim(),
-        options: {
-          duration: Number(new FormData(form).get('duration')),
-          style: form.style.value
-        }
+        url: form.wikiUrl.value.trim()
       }),
       signal: controller.signal
     });
@@ -107,7 +116,7 @@ function setLoading(loading) {
   submitButton.disabled = loading;
   submitButton.classList.toggle('is-loading', loading);
   outputPanel.setAttribute('aria-busy', String(loading));
-  form.querySelectorAll('input, select, .sample').forEach((control) => {
+  form.querySelectorAll('input, .sample').forEach((control) => {
     control.disabled = loading;
   });
 }
@@ -127,6 +136,7 @@ function errorMessage(error) {
     FREE_MODEL_UNAVAILABLE: 'No approved free AI model is available right now. No paid fallback was used.',
     FREE_MODEL_TIMEOUT: 'The free AI model took too long to respond. Try again.',
     FREE_MODELS_EXHAUSTED: 'Free AI capacity is full right now. No paid model was used. Try again later.',
+    FREE_MODELS_UNAVAILABLE: 'Free AI models could not complete this request. No paid model was used. Try again.',
     EMPTY_MODEL_RESPONSE: 'The free AI model returned no usable answer. No paid fallback was used. Try again.',
     INVALID_MODEL_RESPONSE: 'The free AI model returned an unusable answer. No paid fallback was used. Try again.',
     REQUEST_TIMEOUT: 'Generation took too long. No paid fallback was used. Try again.',
