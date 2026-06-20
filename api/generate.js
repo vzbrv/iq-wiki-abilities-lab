@@ -20,10 +20,10 @@ import {
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_FREE_MODELS = [
+  'openai/gpt-oss-120b:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
   'openai/gpt-oss-20b:free',
   'qwen/qwen3-next-80b-a3b-instruct:free',
-  'google/gemma-4-26b-a4b-it:free',
-  'meta-llama/llama-3.3-70b-instruct:free',
   'openrouter/free'
 ];
 const FREE_GENERATION_BUDGET_MS = 50000;
@@ -191,8 +191,8 @@ Article:
     return `${shared}
 Create a grounded ${VIDEO_DURATION_SECONDS}-second vertical video production plan.
 The fixed style is ${VIDEO_STYLE_DESCRIPTION}. Keep it accurate, energetic, visually specific, and non-sensational.
-Return {"hooks":["five short hooks"],"voiceover":"complete narration","scenes":[{"time":"0-3s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"scene narration","source_fact":"exact article fact"}],"cta":"short IQ.wiki CTA"}.
-Keep the complete voiceover to no more than ${VIDEO_MAX_NARRATION_WORDS} words. Keep all scene voiceovers combined to no more than ${VIDEO_MAX_NARRATION_WORDS} words. Keep every caption to no more than five words.
+Return exactly this shape: {"hooks":["hook 1","hook 2","hook 3","hook 4","hook 5"],"voiceover":"the complete narration","scenes":[{"time":"0-5s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"},{"time":"5-10s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"},{"time":"10-15s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"}],"cta":"short IQ.wiki CTA"}.
+The top-level voiceover must be the scene voiceovers joined in order. Keep that narration to no more than ${VIDEO_MAX_NARRATION_WORDS} words total. Keep every caption to no more than five words.
 Visuals must depict article entities, products, events, places, timelines, metrics, or processes. No random abstract graphics.`;
   }
   if (action === 'funding_timeline') {
@@ -256,23 +256,26 @@ export function validateGeneratedResult(action, value) {
 
   if (action === 'video_scenario') {
     const scenes = requiredArray(value.scenes, 10).map((scene) => {
-      const caption = optionalText(scene?.caption, 100);
-      if (countWords(caption) > 5) invalidModelResult();
       return {
-        time: optionalText(scene?.time, 30),
-        visual: requiredText(scene?.visual, 500),
-        caption,
-        voiceover: requiredText(scene?.voiceover, 500),
-        source_fact: requiredText(scene?.source_fact, 500)
+        time: optionalText(scene?.time ?? scene?.timestamp, 30),
+        visual: requiredText(scene?.visual ?? scene?.visual_direction ?? scene?.description, 500),
+        caption: limitWords(optionalText(scene?.caption ?? scene?.on_screen_text, 100), 5),
+        voiceover: optionalText(scene?.voiceover ?? scene?.narration, 500),
+        source_fact: requiredText(scene?.source_fact ?? scene?.sourceFact ?? scene?.fact, 500)
       };
     });
-    const voiceover = requiredText(value.voiceover, 3000);
-    if (countWords(voiceover) > VIDEO_MAX_NARRATION_WORDS) invalidModelResult();
-    if (countWords(scenes.map((scene) => scene.voiceover).join(' ')) > VIDEO_MAX_NARRATION_WORDS) {
-      invalidModelResult();
+    const sceneNarration = scenes.map((scene) => scene.voiceover).filter(Boolean).join(' ');
+    const voiceover = limitWords(
+      requiredText(optionalText(value.voiceover ?? value.narration, 3000) || sceneNarration, 3000),
+      VIDEO_MAX_NARRATION_WORDS
+    );
+    let remainingNarrationWords = VIDEO_MAX_NARRATION_WORDS;
+    for (const scene of scenes) {
+      scene.voiceover = limitWords(scene.voiceover, remainingNarrationWords);
+      remainingNarrationWords -= countWords(scene.voiceover);
     }
     return {
-      hooks: requiredArray(value.hooks, 5).map((hook) => requiredText(hook, 160)),
+      hooks: normalizeHooks(value.hooks ?? value.hook),
       voiceover,
       scenes,
       cta: optionalText(value.cta, 200)
@@ -318,6 +321,16 @@ function requiredText(value, maxLength) {
 
 function optionalText(value, maxLength) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+}
+
+function normalizeHooks(value) {
+  const hooks = Array.isArray(value) ? value : [value];
+  return requiredArray(hooks, 5).map((hook) => requiredText(hook, 160));
+}
+
+function limitWords(value, maxWords) {
+  if (!value || maxWords <= 0) return '';
+  return value.trim().split(/\s+/).slice(0, maxWords).join(' ');
 }
 
 function countWords(value) {

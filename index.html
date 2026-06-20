@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Turn an IQ.wiki article into a grounded short-video script and visual production plan.">
+    <meta name="description" content="Watch a concise AI-generated video instead of reading an entire IQ.wiki article.">
     <title>IQ.wiki Video Studio</title>
     <link rel="icon" href="https://iq.wiki/favicon.ico">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -24,12 +24,12 @@
       <section class="intro-copy" aria-labelledby="page-title">
         <p class="eyebrow">SHORT VIDEO STUDIO</p>
         <h1 id="page-title">Explain any IQ.wiki page in 15 seconds</h1>
-        <p>Generate a source-grounded script, narration, and topic-specific scene plan in one click.</p>
+        <p>Watch a source-grounded, topic-specific explainer without reading the full article.</p>
       </section>
 
       <div class="provider-strip" role="note">
-        <span><i class="status-dot ready"></i> Script and plan: free OpenRouter models only</span>
-        <span><i class="status-dot waiting"></i> Video rendering: separate engine, not connected</span>
+        <span><i class="status-dot ready"></i> Scenario: free OpenRouter models only</span>
+        <span><i class="status-dot waiting"></i> Videos: prebuilt and stored for instant playback</span>
       </div>
 
       <section class="studio-grid" aria-label="Video studio">
@@ -53,7 +53,7 @@
           </div>
 
           <button id="generatePlanBtn" class="primary-button" type="submit">
-            <span class="button-label">Create script &amp; scene plan</span>
+            <span class="button-label">Watch 15-second explainer</span>
             <span class="spinner" aria-hidden="true"></span>
           </button>
           <p class="privacy-note">Only the public article URL is sent. No paid AI fallback is allowed.</p>
@@ -62,11 +62,23 @@
         <section id="outputPanel" class="output-panel" aria-live="polite" aria-busy="false">
           <div id="emptyState" class="empty-state">
             <div class="play-mark" aria-hidden="true">▶</div>
-            <h2>Your production plan will appear here</h2>
-            <p>It will include a complete narration and scene-by-scene visual directions grounded in the article.</p>
+            <h2>Your explainer will appear here</h2>
+            <p>Ready videos play immediately. New or changed articles receive a production-ready AI plan.</p>
           </div>
 
           <div id="status" class="message" hidden role="status"></div>
+
+          <article id="videoResult" class="video-result" hidden>
+            <video id="videoPlayer" class="video-player" controls playsinline preload="metadata"></video>
+            <div class="video-meta">
+              <div>
+                <p class="step-label">15-SECOND EXPLAINER</p>
+                <h2 id="videoTitle"></h2>
+                <a id="videoArticleLink" target="_blank" rel="noreferrer">View source on IQ.wiki</a>
+              </div>
+              <span id="videoProvider" class="model-badge"></span>
+            </div>
+          </article>
 
           <article id="result" hidden>
             <header class="result-header">
@@ -97,7 +109,7 @@
             <button class="video-button" type="button" disabled>
               <span aria-hidden="true">▶</span> Video engine coming soon
             </button>
-            <p class="engine-note">Rendering will use a separate, explicitly configured video provider. It will never use a paid fallback.</p>
+            <p class="engine-note">This article needs a new stored video. Rendering will use a separate, explicitly configured provider with no automatic paid fallback.</p>
           </article>
         </section>
       </section>

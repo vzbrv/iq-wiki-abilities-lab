@@ -220,6 +220,17 @@ input[type="url"] {
 .message.loading { background: #f8fafc; color: #475569; }
 .message.error { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
 
+.video-result { display: grid; gap: 18px; }
+.video-player {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #09090b;
+  border-radius: 6px;
+}
+.video-meta { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+.video-meta h2 { margin: 0 0 5px; font-size: 24px; }
+.video-meta a { color: var(--pink-dark); font-size: 13px; font-weight: 600; }
+
 .result-header { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
 .result-header h2 { margin: 0 0 5px; font-size: 24px; }
 .result-header a { font-size: 13px; }
@@ -270,6 +281,6 @@ body.embedded main { width: min(1120px, calc(100% - 20px)); padding: 10px 0; }
   .setup-panel, .output-panel { padding: 18px; }
   .output-panel { min-height: 360px; }
   .empty-state { min-height: 320px; padding: 12px; }
-  .result-header { display: grid; }
+  .result-header, .video-meta { display: grid; }
   .model-badge { width: fit-content; }
 }
