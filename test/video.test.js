@@ -1,14 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getVideoConfig, publicVideoConfig } from '../lib/video/config.js';
+import { VIDEO_DURATION_SECONDS, VIDEO_STYLE } from '../lib/video/profile.js';
 import { MockVideoProvider } from '../lib/video/providers/mock.js';
 import { VideoJobService } from '../lib/video/service.js';
 
 const input = {
   article: { title: 'Ethereum', url: 'https://iq.wiki/wiki/ethereum' },
   scenario: { voiceover: 'Ethereum is a programmable blockchain.', scenes: [{ visual: 'Ethereum network' }] },
-  duration: 20,
-  style: 'technical'
+  duration: VIDEO_DURATION_SECONDS,
+  style: VIDEO_STYLE
 };
 
 function config(overrides = {}) {
@@ -70,6 +71,18 @@ test('job lifecycle supports polling, playback, cancellation, and retry', async 
   const retried = await service.retryJob(cancellable.id);
   assert.equal(retried.state, 'queued');
   assert.equal(retried.attempt, 2);
+});
+
+test('rejects duration and style overrides', async () => {
+  const service = new VideoJobService({ config: config(), provider: new MockVideoProvider() });
+  await assert.rejects(
+    service.createJob({ ...input, duration: 20 }),
+    { code: 'INVALID_VIDEO_INPUT' }
+  );
+  await assert.rejects(
+    service.createJob({ ...input, style: 'technical' }),
+    { code: 'INVALID_VIDEO_INPUT' }
+  );
 });
 
 test('credentials and provider job IDs are never public', async () => {

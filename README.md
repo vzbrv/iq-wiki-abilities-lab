@@ -1,11 +1,13 @@
 # IQ.wiki Video Studio
 
-Visitor-ready studio that converts a live IQ.wiki article into a grounded 15–30 second production package:
+Visitor-ready studio that converts a live IQ.wiki article into a grounded, fixed 15-second production package:
 
 - complete narration
 - opening hooks
 - topic-specific scene directions
 - on-screen captions and source facts
+
+The production profile is fixed to a cinematic explainer that is clear, easy to follow, and entertaining.
 
 The script and scene plan use OpenRouter free models only. The server rejects any model without the `:free` suffix, except OpenRouter's `openrouter/free` router. It never falls back to a paid model.
 

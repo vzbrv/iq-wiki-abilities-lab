@@ -11,6 +11,12 @@ import {
   readJsonBody,
   parseStrictJson
 } from '../lib/foundation.js';
+import {
+  VIDEO_DURATION_SECONDS,
+  VIDEO_MAX_NARRATION_WORDS,
+  VIDEO_STYLE,
+  VIDEO_STYLE_DESCRIPTION
+} from '../lib/video/profile.js';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_FREE_MODELS = [
@@ -38,9 +44,9 @@ export default async function handler(req, res) {
     const body = await readJsonBody(req);
     const action = body.action === 'short_video' ? 'video_scenario' : body.action;
     const client = getClientId(req);
-    enforceRateLimit(action === 'load_wiki' ? loadLimit(client) : generateLimit(client));
 
     if (action === 'load_wiki') {
+      enforceRateLimit(loadLimit(client));
       const wiki = await loadWiki(body.url);
       log('request_complete', { requestId, action, status: 200, durationMs: Date.now() - startedAt });
       return res.status(200).json({ wiki, requestId });
@@ -48,6 +54,7 @@ export default async function handler(req, res) {
     if (!['video_scenario', 'funding_timeline', 'crypto_lore'].includes(action)) {
       throw new AppError(400, 'INVALID_ACTION', 'Invalid ability type.');
     }
+    enforceRateLimit(generateLimit(client));
 
     const wiki = await loadWiki(body.url);
     const models = getConfiguredModels();
@@ -55,11 +62,11 @@ export default async function handler(req, res) {
       throw new AppError(503, 'CONFIGURATION_ERROR', 'Free AI generation is not configured.');
     }
 
-    const cacheKey = JSON.stringify([action, wiki.url, body.options || {}, models]);
+    const cacheKey = JSON.stringify([action, wiki.url, models]);
     let generated = resultCache.get(cacheKey);
     if (!generated) {
       generated = await callOpenRouter(
-        buildPrompt(action, wiki, body.options || {}),
+        buildPrompt(action, wiki),
         req.headers.host,
         models,
         requestOpenRouter,
@@ -78,7 +85,13 @@ export default async function handler(req, res) {
       provider: 'openrouter',
       freeOnly: true,
       pipeline: action === 'video_scenario' ? {
-        scenario: { provider: 'openrouter', model, freeOnly: true },
+        scenario: {
+          provider: 'openrouter',
+          model,
+          freeOnly: true,
+          durationSeconds: VIDEO_DURATION_SECONDS,
+          style: VIDEO_STYLE
+        },
         video: { provider: null, model: null, configured: false, status: 'not_configured' }
       } : undefined,
       requestId
@@ -168,19 +181,18 @@ export async function readResponseText(response, maxBytes = 2000000) {
   }
 }
 
-function buildPrompt(action, wiki, options) {
+export function buildPrompt(action, wiki) {
   const shared = `Use only the IQ.wiki article below. Never invent facts. Return strict JSON only.
 Title: ${wiki.title}
 URL: ${wiki.url}
 Article:
-${wiki.rawText}`;
+  ${wiki.rawText}`;
   if (action === 'video_scenario') {
-    const duration = [15, 20, 30].includes(Number(options.duration)) ? Number(options.duration) : 20;
-    const style = ['documentary', 'cinematic', 'technical', 'social'].includes(options.style)
-      ? options.style : 'documentary';
     return `${shared}
-Create a grounded ${duration}-second ${style} vertical video production plan.
+Create a grounded ${VIDEO_DURATION_SECONDS}-second vertical video production plan.
+The fixed style is ${VIDEO_STYLE_DESCRIPTION}. Keep it accurate, energetic, visually specific, and non-sensational.
 Return {"hooks":["five short hooks"],"voiceover":"complete narration","scenes":[{"time":"0-3s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"scene narration","source_fact":"exact article fact"}],"cta":"short IQ.wiki CTA"}.
+Keep the complete voiceover to no more than ${VIDEO_MAX_NARRATION_WORDS} words. Keep all scene voiceovers combined to no more than ${VIDEO_MAX_NARRATION_WORDS} words. Keep every caption to no more than five words.
 Visuals must depict article entities, products, events, places, timelines, metrics, or processes. No random abstract graphics.`;
   }
   if (action === 'funding_timeline') {
@@ -243,16 +255,25 @@ export function validateGeneratedResult(action, value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalidModelResult();
 
   if (action === 'video_scenario') {
-    const scenes = requiredArray(value.scenes, 10).map((scene) => ({
-      time: optionalText(scene?.time, 30),
-      visual: requiredText(scene?.visual, 500),
-      caption: optionalText(scene?.caption, 100),
-      voiceover: requiredText(scene?.voiceover, 500),
-      source_fact: requiredText(scene?.source_fact, 500)
-    }));
+    const scenes = requiredArray(value.scenes, 10).map((scene) => {
+      const caption = optionalText(scene?.caption, 100);
+      if (countWords(caption) > 5) invalidModelResult();
+      return {
+        time: optionalText(scene?.time, 30),
+        visual: requiredText(scene?.visual, 500),
+        caption,
+        voiceover: requiredText(scene?.voiceover, 500),
+        source_fact: requiredText(scene?.source_fact, 500)
+      };
+    });
+    const voiceover = requiredText(value.voiceover, 3000);
+    if (countWords(voiceover) > VIDEO_MAX_NARRATION_WORDS) invalidModelResult();
+    if (countWords(scenes.map((scene) => scene.voiceover).join(' ')) > VIDEO_MAX_NARRATION_WORDS) {
+      invalidModelResult();
+    }
     return {
       hooks: requiredArray(value.hooks, 5).map((hook) => requiredText(hook, 160)),
-      voiceover: requiredText(value.voiceover, 3000),
+      voiceover,
       scenes,
       cta: optionalText(value.cta, 200)
     };
@@ -297,6 +318,10 @@ function requiredText(value, maxLength) {
 
 function optionalText(value, maxLength) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+}
+
+function countWords(value) {
+  return value.trim() ? value.trim().split(/\s+/).length : 0;
 }
 
 function invalidModelResult() {

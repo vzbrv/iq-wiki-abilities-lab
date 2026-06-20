@@ -16,7 +16,8 @@ export default async function handler(req, res) {
   const startedAt = Date.now();
   try {
     const current = getRuntime();
-    if (req.method === 'GET' && (!req.query?.id || req.query?.action === 'capabilities')) {
+    const queryAction = req.query?.action;
+    if (req.method === 'GET' && (queryAction === 'capabilities' || (!queryAction && !req.query?.id))) {
       return res.status(200).json({ video: publicVideoConfig(current.config), requestId });
     }
 

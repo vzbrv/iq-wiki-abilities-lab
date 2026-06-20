@@ -42,11 +42,7 @@ form.addEventListener('submit', async (event) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         action: 'video_scenario',
-        url: form.wikiUrl.value.trim(),
-        options: {
-          duration: Number(new FormData(form).get('duration')),
-          style: form.style.value
-        }
+        url: form.wikiUrl.value.trim()
       }),
       signal: controller.signal
     });
@@ -120,7 +116,7 @@ function setLoading(loading) {
   submitButton.disabled = loading;
   submitButton.classList.toggle('is-loading', loading);
   outputPanel.setAttribute('aria-busy', String(loading));
-  form.querySelectorAll('input, select, .sample').forEach((control) => {
+  form.querySelectorAll('input, .sample').forEach((control) => {
     control.disabled = loading;
   });
 }

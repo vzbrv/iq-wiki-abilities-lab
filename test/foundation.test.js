@@ -14,12 +14,25 @@ import {
   parseStrictJson
 } from '../lib/foundation.js';
 import {
+  buildPrompt,
   buildOpenRouterPayload,
   callOpenRouter,
   getConfiguredModels,
   readResponseText,
   validateGeneratedResult
 } from '../api/generate.js';
+
+test('hardcodes the 15-second cinematic explainer profile', () => {
+  const prompt = buildPrompt('video_scenario', {
+    title: 'Solana',
+    url: 'https://iq.wiki/wiki/solana',
+    rawText: 'Solana is a blockchain designed for fast transactions.'
+  });
+
+  assert.match(prompt, /15-second/);
+  assert.match(prompt, /cinematic and explanatory, easy to understand, and entertaining/);
+  assert.doesNotMatch(prompt, /20-second|30-second|documentary/);
+});
 
 test('accepts direct HTTPS IQ.wiki article URLs', () => {
   assert.equal(
@@ -208,6 +221,36 @@ test('validates complete grounded video plans', () => {
       scenes: []
     }),
     /incomplete answer/
+  );
+  assert.throws(
+    () => validateGeneratedResult('video_scenario', {
+      hooks: ['Hook'],
+      voiceover: Array.from({ length: 43 }, () => 'word').join(' '),
+      scenes: [{
+        time: '0-15s',
+        visual: 'Show the protocol interface',
+        caption: 'Protocol launch',
+        voiceover: 'Scene narration',
+        source_fact: 'The article says the protocol launched.'
+      }],
+      cta: 'Read more'
+    }),
+    (error) => error.code === 'INVALID_MODEL_RESPONSE'
+  );
+  assert.throws(
+    () => validateGeneratedResult('video_scenario', {
+      hooks: ['Hook'],
+      voiceover: 'Narration',
+      scenes: [{
+        time: '0-15s',
+        visual: 'Show the protocol interface',
+        caption: 'one two three four five six',
+        voiceover: 'Scene narration',
+        source_fact: 'The article says the protocol launched.'
+      }],
+      cta: 'Read more'
+    }),
+    (error) => error.code === 'INVALID_MODEL_RESPONSE'
   );
 });
 

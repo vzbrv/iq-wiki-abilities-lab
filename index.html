@@ -23,7 +23,7 @@
     <main>
       <section class="intro-copy" aria-labelledby="page-title">
         <p class="eyebrow">SHORT VIDEO STUDIO</p>
-        <h1 id="page-title">Explain any IQ.wiki page in 15–30 seconds</h1>
+        <h1 id="page-title">Explain any IQ.wiki page in 15 seconds</h1>
         <p>Generate a source-grounded script, narration, and topic-specific scene plan in one click.</p>
       </section>
 
@@ -35,7 +35,7 @@
       <section class="studio-grid" aria-label="Video studio">
         <form id="studioForm" class="setup-panel">
           <div>
-            <p class="step-label">1. IQ.WIKI PAGE</p>
+            <p class="step-label">IQ.WIKI PAGE</p>
             <label for="wikiUrl">Article URL</label>
             <input id="wikiUrl" name="wikiUrl" type="url" required
               placeholder="https://iq.wiki/wiki/solana"
@@ -47,23 +47,9 @@
             </div>
           </div>
 
-          <fieldset>
-            <legend><span class="step-label">2. DURATION</span></legend>
-            <div class="segmented">
-              <label><input type="radio" name="duration" value="15"><span>15 sec</span></label>
-              <label><input type="radio" name="duration" value="20" checked><span>20 sec</span></label>
-              <label><input type="radio" name="duration" value="30"><span>30 sec</span></label>
-            </div>
-          </fieldset>
-
-          <div>
-            <label for="style"><span class="step-label">3. STYLE</span></label>
-            <select id="style" name="style">
-              <option value="documentary">Documentary</option>
-              <option value="cinematic">Cinematic</option>
-              <option value="technical">Technical</option>
-              <option value="social">Fast social</option>
-            </select>
+          <div class="fixed-profile" role="note">
+            <p><strong>15 seconds</strong> · Fixed length</p>
+            <p><strong>Cinematic explainer</strong> · Clear, easy, and entertaining</p>
           </div>
 
           <button id="generatePlanBtn" class="primary-button" type="submit">
