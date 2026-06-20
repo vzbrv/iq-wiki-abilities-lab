@@ -12,11 +12,14 @@ import {
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_FREE_MODELS = [
-  'openrouter/free',
-  'qwen/qwen3-next-80b-a3b-instruct:free',
   'openai/gpt-oss-20b:free',
-  'google/gemma-4-26b-a4b-it:free'
+  'qwen/qwen3-next-80b-a3b-instruct:free',
+  'google/gemma-4-26b-a4b-it:free',
+  'meta-llama/llama-3.3-70b-instruct:free',
+  'openrouter/free'
 ];
+const FREE_GENERATION_BUDGET_MS = 50000;
+const MAX_FREE_MODEL_TIMEOUT_MS = 12000;
 const wikiCache = new TTLCache(100);
 const resultCache = new TTLCache(100);
 const loadLimit = createRateLimiter({ limit: Number(process.env.LOAD_RATE_LIMIT || 20), windowMs: 300000 });
@@ -58,7 +61,8 @@ export default async function handler(req, res) {
         req.headers.host,
         models,
         requestOpenRouter,
-        (value) => validateGeneratedResult(action, value)
+        (value) => validateGeneratedResult(action, value),
+        requestId
       );
       resultCache.set(cacheKey, generated, 900000);
     }
@@ -172,10 +176,9 @@ Visuals must depict article entities, products, events, places, timelines, metri
   return `${shared}\nReturn {"title":"story title","chapters":[{"heading":"short heading","body":"grounded story section","source_fact":"article fact"}],"cta":"short IQ.wiki CTA"}.`;
 }
 
-function getConfiguredModels() {
-  const configured = process.env.OPENROUTER_MODELS || process.env.OPENROUTER_MODEL;
-  const defaults = process.env.OPENROUTER_MODELS ? [] : DEFAULT_FREE_MODELS;
-  return getFreeModelCandidates(configured, defaults);
+export function getConfiguredModels(env = process.env) {
+  const configured = env.OPENROUTER_MODELS || env.OPENROUTER_MODEL;
+  return getFreeModelCandidates(configured, DEFAULT_FREE_MODELS);
 }
 
 export async function callOpenRouter(
@@ -183,25 +186,41 @@ export async function callOpenRouter(
   host,
   models,
   request = requestOpenRouter,
-  validate = (value) => value
+  validate = (value) => value,
+  requestId
 ) {
-  let lastError;
-  const deadline = Date.now() + 45000;
-  for (const model of models) {
-    const timeoutMs = Math.min(18000, deadline - Date.now());
-    if (timeoutMs < 1000) break;
+  const failures = [];
+  const deadline = Date.now() + FREE_GENERATION_BUDGET_MS;
+  for (const [index, model] of models.entries()) {
+    const remainingModels = models.length - index;
+    const remainingMs = deadline - Date.now();
+    const timeoutMs = Math.min(
+      MAX_FREE_MODEL_TIMEOUT_MS,
+      Math.max(1000, Math.floor(remainingMs / remainingModels))
+    );
     try {
       return { result: validate(await request(prompt, host, model, timeoutMs)), model };
     } catch (error) {
       if (!isFreeModelFailure(error)) throw error;
-      lastError = error;
-      log('free_model_failed', { model, code: error.code, status: error.status });
+      failures.push(error);
+      log('free_model_failed', {
+        requestId,
+        model,
+        code: error.code,
+        status: error.status,
+        attempt: index + 1,
+        totalModels: models.length
+      });
     }
   }
+  const quotaOnly = failures.length > 0
+    && failures.every((error) => error.code === 'FREE_MODEL_QUOTA');
   throw new AppError(
-    lastError?.status === 429 ? 429 : 503,
-    'FREE_MODELS_EXHAUSTED',
-    'Free AI capacity is full right now. No paid model was used. Try again later.',
+    quotaOnly ? 429 : 503,
+    quotaOnly ? 'FREE_MODELS_EXHAUSTED' : 'FREE_MODELS_UNAVAILABLE',
+    quotaOnly
+      ? 'Free AI capacity is full right now. No paid model was used. Try again later.'
+      : 'Free AI models could not complete this request. No paid model was used. Try again.',
     true
   );
 }

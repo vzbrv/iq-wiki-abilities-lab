@@ -127,6 +127,7 @@ function errorMessage(error) {
     FREE_MODEL_UNAVAILABLE: 'No approved free AI model is available right now. No paid fallback was used.',
     FREE_MODEL_TIMEOUT: 'The free AI model took too long to respond. Try again.',
     FREE_MODELS_EXHAUSTED: 'Free AI capacity is full right now. No paid model was used. Try again later.',
+    FREE_MODELS_UNAVAILABLE: 'Free AI models could not complete this request. No paid model was used. Try again.',
     EMPTY_MODEL_RESPONSE: 'The free AI model returned no usable answer. No paid fallback was used. Try again.',
     INVALID_MODEL_RESPONSE: 'The free AI model returned an unusable answer. No paid fallback was used. Try again.',
     REQUEST_TIMEOUT: 'Generation took too long. No paid fallback was used. Try again.',

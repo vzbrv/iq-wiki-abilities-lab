@@ -11,7 +11,7 @@ import {
   getFreeModelCandidates,
   parseStrictJson
 } from '../lib/foundation.js';
-import { callOpenRouter, validateGeneratedResult } from '../api/generate.js';
+import { callOpenRouter, getConfiguredModels, validateGeneratedResult } from '../api/generate.js';
 
 test('accepts direct HTTPS IQ.wiki article URLs', () => {
   assert.equal(
@@ -42,6 +42,16 @@ test('builds a deduplicated free-only model list', () => {
   );
 });
 
+test('keeps built-in free fallbacks when models are configured', () => {
+  const models = getConfiguredModels({
+    OPENROUTER_MODELS: 'meta-llama/custom-model:free'
+  });
+  assert.equal(models[0], 'meta-llama/custom-model:free');
+  assert.ok(models.includes('openai/gpt-oss-20b:free'));
+  assert.ok(models.includes('openrouter/free'));
+  assert.equal(models.every((model) => model === 'openrouter/free' || model.endsWith(':free')), true);
+});
+
 test('fails over between free models without adding a paid model', async () => {
   const calls = [];
   const generated = await callOpenRouter('prompt', 'example.com', [
@@ -59,6 +69,36 @@ test('fails over between free models without adding a paid model', async () => {
     result: { voiceover: 'working' },
     model: 'openai/gpt-oss-20b:free'
   });
+});
+
+test('tries every free model and distinguishes non-quota failures', async () => {
+  const models = [
+    'openai/gpt-oss-20b:free',
+    'qwen/qwen3-next-80b-a3b-instruct:free',
+    'openrouter/free'
+  ];
+  const calls = [];
+  await assert.rejects(
+    callOpenRouter('prompt', 'example.com', models, async (_prompt, _host, model, timeoutMs) => {
+      calls.push({ model, timeoutMs });
+      throw new AppError(504, 'FREE_MODEL_TIMEOUT', 'timeout', true);
+    }),
+    (error) => error.code === 'FREE_MODELS_UNAVAILABLE' && error.status === 503
+  );
+  assert.deepEqual(calls.map(({ model }) => model), models);
+  assert.equal(calls.every(({ timeoutMs }) => timeoutMs >= 1000 && timeoutMs <= 12000), true);
+});
+
+test('reports capacity only when every free model rejects for quota', async () => {
+  await assert.rejects(
+    callOpenRouter('prompt', 'example.com', [
+      'openai/gpt-oss-20b:free',
+      'openrouter/free'
+    ], async () => {
+      throw new AppError(429, 'FREE_MODEL_QUOTA', 'capacity', true);
+    }),
+    (error) => error.code === 'FREE_MODELS_EXHAUSTED' && error.status === 429
+  );
 });
 
 test('cache expires and rate limiter blocks excess requests', async () => {
