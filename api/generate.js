@@ -304,6 +304,21 @@ function isFreeModelFailure(error) {
   ].includes(error.code);
 }
 
+export function buildOpenRouterPayload(prompt, model) {
+  return {
+    model,
+    messages: [
+      {
+        role: 'system',
+        content: 'Return one complete JSON object only. Do not use Markdown or add explanatory text.'
+      },
+      { role: 'user', content: prompt }
+    ],
+    temperature: 0.2,
+    max_tokens: 1800
+  };
+}
+
 async function requestOpenRouter(prompt, host, model, timeoutMs) {
   const response = await fetch(OPENROUTER_URL, {
     method: 'POST',
@@ -313,19 +328,7 @@ async function requestOpenRouter(prompt, host, model, timeoutMs) {
       'HTTP-Referer': `https://${host || 'iq.wiki'}`,
       'X-Title': 'IQ.wiki Video Studio'
     },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: 'system',
-          content: 'Return one complete JSON object only. Do not use Markdown or add explanatory text.'
-        },
-        { role: 'user', content: prompt }
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.2,
-      max_tokens: 1800
-    }),
+    body: JSON.stringify(buildOpenRouterPayload(prompt, model)),
     signal: AbortSignal.timeout(timeoutMs)
   }).catch((error) => {
     if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {

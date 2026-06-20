@@ -21,7 +21,7 @@ form.addEventListener('submit', async (event) => {
   setLoading(true);
   showStatus('Loading the IQ.wiki article and asking a free AI model…', 'loading');
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60000);
+  const timeout = setTimeout(() => controller.abort(), 75000);
 
   try {
     const response = await fetch(`${apiBase}/api/generate`, {

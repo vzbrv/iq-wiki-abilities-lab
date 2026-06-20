@@ -11,7 +11,12 @@ import {
   getFreeModelCandidates,
   parseStrictJson
 } from '../lib/foundation.js';
-import { callOpenRouter, getConfiguredModels, validateGeneratedResult } from '../api/generate.js';
+import {
+  buildOpenRouterPayload,
+  callOpenRouter,
+  getConfiguredModels,
+  validateGeneratedResult
+} from '../api/generate.js';
 
 test('accepts direct HTTPS IQ.wiki article URLs', () => {
   assert.equal(
@@ -20,9 +25,28 @@ test('accepts direct HTTPS IQ.wiki article URLs', () => {
   );
 });
 
+test('accepts localized IQ.wiki article URLs', () => {
+  assert.equal(
+    assertIqWikiUrl('https://iq.wiki/kr/wiki/ethereum?utm_source=test'),
+    'https://iq.wiki/kr/wiki/ethereum'
+  );
+  assert.equal(
+    assertIqWikiUrl('https://iq.wiki/zh/wiki/bitcoin'),
+    'https://iq.wiki/zh/wiki/bitcoin'
+  );
+});
+
 test('rejects non-IQ.wiki and non-article URLs', () => {
   assert.throws(() => assertIqWikiUrl('https://example.com/wiki/solana'), AppError);
   assert.throws(() => assertIqWikiUrl('https://iq.wiki/rank/cryptocurrencies'), AppError);
+  assert.throws(() => assertIqWikiUrl('https://iq.wiki/wiki/'), AppError);
+});
+
+test('does not require provider-specific JSON mode from free models', () => {
+  const payload = buildOpenRouterPayload('prompt', 'openrouter/free');
+  assert.equal(payload.model, 'openrouter/free');
+  assert.equal('response_format' in payload, false);
+  assert.match(payload.messages[0].content, /JSON object/);
 });
 
 test('blocks paid OpenRouter models', () => {
@@ -110,6 +134,14 @@ test('cache expires and rate limiter blocks excess requests', async () => {
   const limit = createRateLimiter({ limit: 1, windowMs: 1000 });
   assert.equal(limit('client').allowed, true);
   assert.equal(limit('client').allowed, false);
+});
+
+test('rate limiter bounds retained visitor entries', () => {
+  const limit = createRateLimiter({ limit: 1, windowMs: 60_000, maxEntries: 2 });
+  assert.equal(limit('visitor-a').allowed, true);
+  assert.equal(limit('visitor-b').allowed, true);
+  assert.equal(limit('visitor-c').allowed, true);
+  assert.equal(limit('visitor-a').allowed, true);
 });
 
 test('updating a full cache does not evict another entry', () => {
