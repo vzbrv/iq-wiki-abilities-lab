@@ -4,6 +4,7 @@ import {
   TTLCache,
   assertJsonContentType,
   assertIqWikiUrl,
+  cancelResponseBody,
   createRateLimiter,
   extractModelContent,
   extractWikiText,
@@ -23,10 +24,10 @@ import {
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_FREE_MODELS = [
-  'openrouter/free',
   'openai/gpt-oss-20b:free',
   'google/gemma-4-26b-a4b-it:free',
-  'nvidia/nemotron-3-nano-30b-a3b:free'
+  'nvidia/nemotron-3-nano-30b-a3b:free',
+  'openrouter/free'
 ];
 const FREE_GENERATION_BUDGET_MS = 50000;
 const ROUTER_TIMEOUT_MS = 14000;
@@ -71,7 +72,7 @@ export default async function handler(req, res) {
 
     const wiki = await loadWiki(body.url);
     const models = getConfiguredModels();
-    if (!process.env.OPENROUTER_API_KEY) {
+    if (!String(process.env.OPENROUTER_API_KEY || '').trim()) {
       throw new AppError(503, 'CONFIGURATION_ERROR', 'Free AI generation is not configured.');
     }
 
@@ -131,26 +132,66 @@ function setHeaders(req, res, requestId) {
   res.setHeader('Cache-Control', 'no-store');
 }
 
-async function loadWiki(rawUrl) {
+export async function loadWiki(rawUrl, request = fetch) {
   const url = assertIqWikiUrl(rawUrl);
   const cached = wikiCache.get(url);
   if (cached) return cached;
 
-  const response = await fetch(url, {
-    headers: { Accept: 'text/html', 'User-Agent': 'IQ.wiki Video Studio/1.0' },
-    redirect: 'error',
-    signal: AbortSignal.timeout(8000)
-  }).catch((error) => {
-    if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+  const deadline = Date.now() + 8000;
+  let currentUrl = url;
+  let response;
+  for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
       throw new AppError(504, 'WIKI_TIMEOUT', 'IQ.wiki took too long to respond.', true);
     }
-    throw new AppError(502, 'WIKI_UNAVAILABLE', 'The IQ.wiki article could not be loaded.', true);
-  });
-  if (!response.ok) throw new AppError(502, 'WIKI_UNAVAILABLE', `IQ.wiki returned ${response.status}.`, true);
+    response = await request(currentUrl, {
+      headers: { Accept: 'text/html', 'User-Agent': 'IQ.wiki Video Studio/1.0' },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(remainingMs)
+    }).catch((error) => {
+      if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+        throw new AppError(504, 'WIKI_TIMEOUT', 'IQ.wiki took too long to respond.', true);
+      }
+      throw new AppError(502, 'WIKI_UNAVAILABLE', 'The IQ.wiki article could not be loaded.', true);
+    });
+
+    if (![301, 302, 303, 307, 308].includes(response.status)) break;
+    const location = response.headers.get('location');
+    try {
+      await response.body?.cancel();
+    } catch {
+      // Cleanup errors must not hide redirect validation failures.
+    }
+    if (!location || redirectCount === 3) {
+      throw new AppError(502, 'WIKI_UNAVAILABLE', 'IQ.wiki returned an invalid redirect.', true);
+    }
+    try {
+      currentUrl = assertIqWikiUrl(new URL(location, currentUrl).toString());
+    } catch {
+      throw new AppError(502, 'WIKI_UNAVAILABLE', 'IQ.wiki returned an unsafe redirect.', true);
+    }
+    const redirectedCache = wikiCache.get(currentUrl);
+    if (redirectedCache) {
+      wikiCache.set(url, redirectedCache, 600000);
+      return redirectedCache;
+    }
+  }
+
+  if (!response.ok) {
+    await cancelResponseBody(response);
+    throw new AppError(502, 'WIKI_UNAVAILABLE', `IQ.wiki returned ${response.status}.`, true);
+  }
   const type = response.headers.get('content-type') || '';
-  if (!type.includes('text/html')) throw new AppError(422, 'INVALID_WIKI_CONTENT', 'The URL did not return an HTML article.');
+  if (!type.includes('text/html')) {
+    await cancelResponseBody(response);
+    throw new AppError(422, 'INVALID_WIKI_CONTENT', 'The URL did not return an HTML article.');
+  }
   const declaredSize = Number(response.headers.get('content-length') || 0);
-  if (declaredSize > 2000000) throw new AppError(413, 'WIKI_TOO_LARGE', 'The IQ.wiki article is too large.');
+  if (declaredSize > 2000000) {
+    await cancelResponseBody(response);
+    throw new AppError(413, 'WIKI_TOO_LARGE', 'The IQ.wiki article is too large.');
+  }
   const html = await readResponseText(response);
   const extracted = extractWikiText(html);
   if (extracted.rawText.length < 180) {
@@ -158,11 +199,12 @@ async function loadWiki(rawUrl) {
   }
   const wiki = {
     title: extracted.title || 'IQ.wiki article',
-    url,
+    url: currentUrl,
     summary: extracted.rawText.slice(0, 420),
     rawText: extracted.rawText,
     loadMode: 'live IQ.wiki article'
   };
+  if (currentUrl !== url) wikiCache.set(currentUrl, wiki, 600000);
   wikiCache.set(url, wiki, 600000);
   return wiki;
 }
@@ -219,7 +261,7 @@ export async function callOpenRouter(
     const remainingModels = models.length - index;
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) break;
-    const timeoutCap = index === 0 && model === 'openrouter/free'
+    const timeoutCap = model === 'openrouter/free'
       ? ROUTER_TIMEOUT_MS
       : FALLBACK_TIMEOUT_MS;
     const timeoutMs = Math.min(
@@ -318,21 +360,28 @@ export function validateGeneratedResult(action, value) {
 
     const suppliedVoiceover = optionalText(value.voiceover ?? value.narration ?? value.script, 3000);
     if (!scenes.every((scene) => scene.voiceover) && suppliedVoiceover) {
-      const narrationWords = limitWords(suppliedVoiceover, VIDEO_MAX_NARRATION_WORDS).split(/\s+/);
+      const narrationWords = limitWords(suppliedVoiceover, VIDEO_MAX_NARRATION_WORDS)
+        .split(/\s+/)
+        .filter(Boolean);
       scenes.forEach((scene, index) => {
+        if (scene.voiceover) return;
         const start = Math.floor((index * narrationWords.length) / scenes.length);
         const end = Math.floor(((index + 1) * narrationWords.length) / scenes.length);
         scene.voiceover = narrationWords.slice(start, end).join(' ');
       });
     }
 
-    let remainingNarrationWords = VIDEO_MAX_NARRATION_WORDS;
-    for (const scene of scenes) {
-      scene.voiceover = limitWords(scene.voiceover, remainingNarrationWords);
-      remainingNarrationWords -= countWords(scene.voiceover);
-    }
+    let remainingWords = VIDEO_MAX_NARRATION_WORDS;
+    scenes.forEach((scene, index) => {
+      const reservedWords = scenes.length - index - 1;
+      scene.voiceover = requiredText(
+        limitWords(scene.voiceover, remainingWords - reservedWords),
+        500
+      );
+      remainingWords -= countWords(scene.voiceover);
+    });
     const voiceover = requiredText(
-      scenes.map((scene) => scene.voiceover).filter(Boolean).join(' '),
+      scenes.map((scene) => scene.voiceover).join(' '),
       3000
     );
     return {
@@ -479,7 +528,7 @@ async function requestOpenRouter(prompt, _host, model, timeoutMs) {
   const response = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      Authorization: `Bearer ${String(process.env.OPENROUTER_API_KEY || '').trim()}`,
       'Content-Type': 'application/json',
       'HTTP-Referer': getOpenRouterReferer(),
       'X-Title': 'IQ.wiki Video Studio'
@@ -493,6 +542,7 @@ async function requestOpenRouter(prompt, _host, model, timeoutMs) {
     throw new AppError(503, 'FREE_MODEL_UNAVAILABLE', 'The free model is unavailable.', true);
   });
   if (!response.ok) {
+    await cancelResponseBody(response);
     if (response.status === 401 || response.status === 403) {
       throw new AppError(503, 'CONFIGURATION_ERROR', 'Free AI generation credentials are invalid.');
     }

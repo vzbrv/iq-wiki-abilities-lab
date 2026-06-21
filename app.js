@@ -1,6 +1,11 @@
 const MAX_API_RESPONSE_BYTES = 1_000_000;
+const PLAYBACK_RETRY_DELAY_MS = 30_000;
+const MAX_PLAYBACK_RETRY_ENTRIES = 100;
 const params = new URLSearchParams(window.location.search);
-const apiBase = resolveApiBase(params.get('api'));
+const configuredApiBase = document.querySelector('meta[name="iq-api-base"]')?.content
+  || window.__IQ_WIKI_API_BASE__
+  || '';
+const apiBase = resolveApiBase(params.get('api'), configuredApiBase);
 const form = document.querySelector('#studioForm');
 const outputPanel = document.querySelector('#outputPanel');
 const emptyState = document.querySelector('#emptyState');
@@ -9,22 +14,56 @@ const result = document.querySelector('#result');
 const videoResult = document.querySelector('#videoResult');
 const videoPlayer = document.querySelector('#videoPlayer');
 const submitButton = document.querySelector('#generatePlanBtn');
-const failedPlaybackUrls = new Set();
+const playbackRetryAfter = new Map();
 
 if (params.get('embed') === '1') document.body.classList.add('embedded');
 if (params.get('url')) document.querySelector('#wikiUrl').value = params.get('url');
 
-function resolveApiBase(value) {
+function normalizeApiBase(value) {
   if (!value) return '';
   try {
     const url = new URL(value);
     const isLocal = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname);
     if (url.protocol !== 'https:' && !(isLocal && url.protocol === 'http:')) return '';
     if (url.username || url.password || url.search || url.hash) return '';
-    return `${url.origin}${url.pathname.replace(/\/$/, '')}`;
+    return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
   } catch {
     return '';
   }
+}
+
+function resolveApiBase(requestedValue, configuredValue) {
+  const requested = normalizeApiBase(requestedValue);
+  const configured = normalizeApiBase(configuredValue);
+  if (!requested) return configured;
+  if (requested === configured) return requested;
+
+  const localHosts = ['localhost', '127.0.0.1', '::1', '[::1]'];
+  const pageIsLocal = localHosts.includes(window.location.hostname);
+  const requestedIsLocal = localHosts.includes(new URL(requested).hostname);
+  return pageIsLocal && requestedIsLocal ? requested : configured;
+}
+
+function canAttemptPlayback(url) {
+  const retryAfter = playbackRetryAfter.get(url);
+  if (!retryAfter) return true;
+  if (retryAfter > Date.now()) return false;
+  playbackRetryAfter.delete(url);
+  return true;
+}
+
+function rememberPlaybackFailure(url) {
+  playbackRetryAfter.delete(url);
+  while (playbackRetryAfter.size >= MAX_PLAYBACK_RETRY_ENTRIES) {
+    playbackRetryAfter.delete(playbackRetryAfter.keys().next().value);
+  }
+  playbackRetryAfter.set(url, Date.now() + PLAYBACK_RETRY_DELAY_MS);
+}
+
+async function cancelResponseBody(response) {
+  try {
+    await response?.body?.cancel?.();
+  } catch {}
 }
 
 document.querySelectorAll('.sample').forEach((button) => {
@@ -46,7 +85,7 @@ form.addEventListener('submit', async (event) => {
     if (
       stored?.state === 'ready'
       && stored.asset?.playbackUrl
-      && !failedPlaybackUrls.has(stored.asset.playbackUrl)
+      && canAttemptPlayback(stored.asset.playbackUrl)
     ) {
       if (await renderStoredVideo(stored)) return;
     }
@@ -113,6 +152,7 @@ async function lookupStoredVideo(url) {
 async function readResponseData(response) {
   const contentLength = Number(response.headers.get('Content-Length'));
   if (Number.isFinite(contentLength) && contentLength > MAX_API_RESPONSE_BYTES) {
+    await cancelResponseBody(response);
     throw new StudioError('API_RESPONSE_TOO_LARGE', 'The server returned too much data.');
   }
 
@@ -121,17 +161,22 @@ async function readResponseData(response) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let byteLength = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      byteLength += value.byteLength;
-      if (byteLength > MAX_API_RESPONSE_BYTES) {
-        await reader.cancel().catch(() => {});
-        throw new StudioError('API_RESPONSE_TOO_LARGE', 'The server returned too much data.');
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        byteLength += value.byteLength;
+        if (byteLength > MAX_API_RESPONSE_BYTES) {
+          await reader.cancel().catch(() => {});
+          throw new StudioError('API_RESPONSE_TOO_LARGE', 'The server returned too much data.');
+        }
+        text += decoder.decode(value, { stream: true });
       }
-      text += decoder.decode(value, { stream: true });
+      text += decoder.decode();
+    } catch (error) {
+      await reader.cancel().catch(() => {});
+      throw error;
     }
-    text += decoder.decode();
   } else {
     text = await response.text();
     if (new TextEncoder().encode(text).byteLength > MAX_API_RESPONSE_BYTES) {
@@ -179,21 +224,26 @@ function renderStoredVideo(video) {
   document.querySelector('#videoTitle').textContent = video.article?.title || 'IQ.wiki explainer';
   document.querySelector('#videoArticleLink').href = video.article?.url || form.wikiUrl.value;
   document.querySelector('#videoProvider').textContent = [asset.provider, asset.model].filter(Boolean).join(' · ') || 'AI-generated video';
-  emptyState.hidden = true;
-  statusBox.hidden = true;
-  result.hidden = true;
-  videoResult.hidden = false;
-  outputPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  videoResult.hidden = true;
   return new Promise((resolve) => {
     const timeout = setTimeout(() => finish(false), 8000);
+    let settled = false;
     const finish = (ready) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timeout);
       videoPlayer.removeEventListener('loadedmetadata', handleReady);
       videoPlayer.removeEventListener('error', handleError);
       if (!ready) {
-        failedPlaybackUrls.add(asset.playbackUrl);
+        rememberPlaybackFailure(asset.playbackUrl);
         resetVideoPlayer();
       } else {
+        playbackRetryAfter.delete(asset.playbackUrl);
+        emptyState.hidden = true;
+        statusBox.hidden = true;
+        result.hidden = true;
+        videoResult.hidden = false;
+        outputPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         videoPlayer.play().catch(() => {});
       }
       resolve(ready);

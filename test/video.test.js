@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { getVideoConfig, publicVideoConfig } from '../lib/video/config.js';
 import { VIDEO_DURATION_SECONDS, VIDEO_STYLE } from '../lib/video/profile.js';
 import { MockVideoProvider } from '../lib/video/providers/mock.js';
-import { VideoJobService, createVideoService } from '../lib/video/service.js';
+import { MemoryVideoJobStore, VideoJobService, createVideoService } from '../lib/video/service.js';
 import { sendError } from '../api/video.js';
 
 const input = {
@@ -87,6 +87,43 @@ test('external providers require explicit spending caps', () => {
     VIDEO_MAX_JOB_USD: '0.50',
     VIDEO_DAILY_CAP_USD: '5'
   }).status, 'ready');
+  assert.throws(() => getVideoConfig({
+    ...env,
+    VIDEO_MAX_JOB_USD: '0.50',
+    VIDEO_DAILY_CAP_USD: '5',
+    NODE_ENV: 'production'
+  }), { code: 'VIDEO_DURABLE_STATE_REQUIRED' });
+});
+
+test('memory job store expires old jobs and remains bounded', () => {
+  let now = 1000;
+  const store = new MemoryVideoJobStore({ maxEntries: 2, ttlMs: 100, now: () => now });
+
+  const first = { id: 'first', state: 'queued', createdAt: new Date(now).toISOString() };
+  store.set(first);
+  first.state = 'failed';
+  const retrieved = store.get('first');
+  retrieved.state = 'cancelled';
+  assert.equal(store.get('first').state, 'queued');
+  store.set({ id: 'second', createdAt: new Date(now).toISOString() });
+  store.set({ id: 'third', createdAt: new Date(now).toISOString() });
+
+  assert.equal(store.get('first'), undefined);
+  assert.equal(store.get('second').id, 'second');
+  assert.equal(store.get('third').id, 'third');
+
+  now += 101;
+  store.set({ id: 'fresh', createdAt: new Date(now).toISOString() });
+  assert.equal(store.get('first'), undefined);
+  assert.equal(store.get('third'), undefined);
+  assert.equal(store.get('fresh').id, 'fresh');
+});
+
+test('memory job store rejects invalid limits and records', () => {
+  assert.throws(() => new MemoryVideoJobStore({ maxEntries: 0 }), TypeError);
+  assert.throws(() => new MemoryVideoJobStore({ ttlMs: 1.5 }), TypeError);
+  assert.throws(() => new MemoryVideoJobStore({ now: null }), TypeError);
+  assert.throws(() => new MemoryVideoJobStore().set({}), TypeError);
 });
 
 test('provider integrations must implement the full lifecycle', () => {
@@ -96,6 +133,15 @@ test('provider integrations must implement the full lifecycle', () => {
     }),
     { code: 'VIDEO_PROVIDER_NOT_IMPLEMENTED' }
   );
+});
+
+test('video jobs require narration for every scene', async () => {
+  const service = createVideoService(config(), {
+    mock: new MockVideoProvider()
+  });
+  const invalid = structuredClone(input);
+  invalid.scenario.scenes[1].voiceover = '';
+  await assert.rejects(service.createJob(invalid), { code: 'INVALID_VIDEO_INPUT' });
 });
 
 test('job lifecycle supports polling, playback, cancellation, and retry', async () => {

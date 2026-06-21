@@ -33,6 +33,16 @@ test("20 percent word-count change is material", () => {
   assert.equal(result.reason, "length_changed");
 });
 
+test("20 percent signature rewrite is material", () => {
+  const result = classifyArticleChange(
+    snapshot({ signature: ["a", "b", "c", "d", "e"] }),
+    snapshot({ exactHash: "b", signature: ["a", "b", "c", "d"] }),
+  );
+
+  assert.equal(result.material, true);
+  assert.equal(result.reason, "content_rewritten");
+});
+
 test("minor edits accumulate against the last material revision", async () => {
   const service = new VideoLibraryService(new MemoryVideoLibraryStore());
   const phrase = "alpha beta gamma delta epsilon zeta eta theta iota kappa ";
@@ -248,6 +258,28 @@ test("returned library records cannot mutate stored state", async () => {
   const stored = await service.lookup(article.url);
   assert.equal(stored.article.title, article.title);
   assert.equal(stored.asset.playbackUrl, "https://cdn.example.com/defensive-copy.mp4");
+});
+
+test("memory library bounds, expires, and isolates records", async () => {
+  let now = 0;
+  const store = new MemoryVideoLibraryStore({
+    maxEntries: 2,
+    ttlMs: 100,
+    now: () => now,
+  });
+  await store.set("a", { value: 1 });
+  await store.set("b", { value: 2 });
+
+  const copy = await store.get("a");
+  copy.value = 99;
+  await store.set("c", { value: 3 });
+
+  assert.equal(await store.get("b"), null);
+  assert.deepEqual(await store.get("a"), { value: 1 });
+
+  now = 101;
+  assert.equal(await store.get("a"), null);
+  assert.equal(await store.get("c"), null);
 });
 
 test("REST library rejects oversized upstream responses", async () => {
