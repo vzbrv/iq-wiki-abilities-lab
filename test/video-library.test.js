@@ -111,6 +111,20 @@ test("malformed video asset payload returns a client error", async () => {
     service.publishAsset(null),
     (error) => error.code === "INVALID_VIDEO_ASSET" && error.status === 400,
   );
+
+  for (const playbackUrl of [
+    "https://127.0.0.1/video.mp4",
+    "https://[::1]/video.mp4",
+  ]) {
+    await assert.rejects(
+      service.publishAsset({
+        url: "https://iq.wiki/wiki/example",
+        revision: "revision",
+        playbackUrl,
+      }),
+      (error) => error.code === "INVALID_VIDEO_ASSET" && error.status === 400,
+    );
+  }
 });
 
 test("unconfigured production library reads as empty but rejects writes", async () => {
@@ -149,6 +163,8 @@ test("rejects unsafe video library endpoints and blank tokens", () => {
     "http://storage.example.com",
     "https://user:pass@storage.example.com",
     "https://storage.example.com/?command=GET",
+    "https://127.0.0.1",
+    "https://[::1]",
   ]) {
     assert.throws(
       () => new RestVideoLibraryStore({ url, token: "token" }),

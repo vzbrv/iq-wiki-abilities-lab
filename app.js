@@ -233,6 +233,12 @@ function renderStoredVideo(video) {
         resetVideoPlayer();
       } else {
         playbackRetryAfter.delete(asset.playbackUrl);
+        videoPlayer.onerror = () => {
+          rememberPlaybackFailure(asset.playbackUrl);
+          resetVideoPlayer();
+          videoResult.hidden = true;
+          showStatus('Stored video could not be played. Try again.', 'error');
+        };
         emptyState.hidden = true;
         statusBox.hidden = true;
         result.hidden = true;
@@ -246,7 +252,7 @@ function renderStoredVideo(video) {
     const handleError = () => finish(false);
     videoPlayer.addEventListener('loadedmetadata', handleReady, { once: true });
     videoPlayer.addEventListener('error', handleError, { once: true });
-    timeout = setTimeout(() => finish(false), 8000);
+    timeout = setTimeout(() => finish(true), 8000);
     if (asset.posterUrl) {
       videoPlayer.poster = asset.posterUrl;
     } else {

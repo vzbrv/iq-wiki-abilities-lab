@@ -12,6 +12,7 @@ import {
   extractWikiText,
   getFreeModelCandidates,
   getOpenRouterReferer,
+  isPublicHttpsUrl,
   readJsonBody,
   readPositiveInteger,
   parseStrictJson,
@@ -125,6 +126,30 @@ test('rejects non-IQ.wiki and non-article URLs', () => {
   assert.throws(() => assertIqWikiUrl('https://attacker.iq.wiki/wiki/solana'), AppError);
   assert.throws(() => assertIqWikiUrl('https://iq.wiki/rank/cryptocurrencies'), AppError);
   assert.throws(() => assertIqWikiUrl('https://iq.wiki/wiki/'), AppError);
+});
+
+test('accepts only public HTTPS media URLs', () => {
+  assert.equal(isPublicHttpsUrl('https://cdn.example.com/video.mp4'), true);
+  assert.equal(isPublicHttpsUrl('https://203.1.1.1/video.mp4'), true);
+  assert.equal(isPublicHttpsUrl('https://[2001:db80::1]/video.mp4'), true);
+
+  for (const url of [
+    'http://cdn.example.com/video.mp4',
+    'https://user:pass@cdn.example.com/video.mp4',
+    'https://localhost/video.mp4',
+    'https://127.0.0.1/video.mp4',
+    'https://10.0.0.1/video.mp4',
+    'https://169.254.169.254/latest/meta-data',
+    'https://192.0.2.1/video.mp4',
+    'https://192.88.99.1/video.mp4',
+    'https://198.51.100.1/video.mp4',
+    'https://203.0.113.1/video.mp4',
+    'https://[::1]/video.mp4',
+    'https://[2001:db8::1]/video.mp4',
+    'https://[fd00::1]/video.mp4'
+  ]) {
+    assert.equal(isPublicHttpsUrl(url), false, url);
+  }
 });
 
 test('enforces JSON object type and size after platform parsing', async () => {
