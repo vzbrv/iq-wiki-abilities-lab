@@ -4,6 +4,7 @@ import {
   TTLCache,
   assertJsonContentType,
   assertIqWikiUrl,
+  cancelResponseBody,
   createRateLimiter,
   extractModelContent,
   extractWikiText,
@@ -24,14 +25,14 @@ import {
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_FREE_MODELS = [
   'openrouter/free',
-  'openai/gpt-oss-120b:free',
-  'nvidia/nemotron-3-super-120b-a12b:free',
-  'qwen/qwen3-next-80b-a3b-instruct:free'
+  'openai/gpt-oss-20b:free',
+  'google/gemma-4-26b-a4b-it:free',
+  'nvidia/nemotron-3-nano-30b-a3b:free'
 ];
 const FREE_GENERATION_BUDGET_MS = 50000;
-const ROUTER_TIMEOUT_MS = 24000;
+const ROUTER_TIMEOUT_MS = 14000;
 const FALLBACK_TIMEOUT_MS = 12000;
-const GENERATION_ARTICLE_MAX_CHARS = 14000;
+const GENERATION_ARTICLE_MAX_CHARS = 8000;
 const VIDEO_SCENE_TIMES = ['0-5s', '5-10s', '10-15s'];
 const wikiCache = new TTLCache(100);
 const resultCache = new TTLCache(100);
@@ -71,7 +72,7 @@ export default async function handler(req, res) {
 
     const wiki = await loadWiki(body.url);
     const models = getConfiguredModels();
-    if (!process.env.OPENROUTER_API_KEY) {
+    if (!String(process.env.OPENROUTER_API_KEY || '').trim()) {
       throw new AppError(503, 'CONFIGURATION_ERROR', 'Free AI generation is not configured.');
     }
 
@@ -83,7 +84,7 @@ export default async function handler(req, res) {
         req.headers.host,
         models,
         requestOpenRouter,
-        (value) => validateGeneratedResult(action, value),
+        (value) => validateGeneratedResult(action, value, wiki),
         requestId
       ));
       resultCache.set(cacheKey, generated, 900000);
@@ -131,26 +132,66 @@ function setHeaders(req, res, requestId) {
   res.setHeader('Cache-Control', 'no-store');
 }
 
-async function loadWiki(rawUrl) {
+export async function loadWiki(rawUrl, request = fetch) {
   const url = assertIqWikiUrl(rawUrl);
   const cached = wikiCache.get(url);
   if (cached) return cached;
 
-  const response = await fetch(url, {
-    headers: { Accept: 'text/html', 'User-Agent': 'IQ.wiki Video Studio/1.0' },
-    redirect: 'error',
-    signal: AbortSignal.timeout(8000)
-  }).catch((error) => {
-    if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+  const deadline = Date.now() + 8000;
+  let currentUrl = url;
+  let response;
+  for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
       throw new AppError(504, 'WIKI_TIMEOUT', 'IQ.wiki took too long to respond.', true);
     }
-    throw new AppError(502, 'WIKI_UNAVAILABLE', 'The IQ.wiki article could not be loaded.', true);
-  });
-  if (!response.ok) throw new AppError(502, 'WIKI_UNAVAILABLE', `IQ.wiki returned ${response.status}.`, true);
+    response = await request(currentUrl, {
+      headers: { Accept: 'text/html', 'User-Agent': 'IQ.wiki Video Studio/1.0' },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(remainingMs)
+    }).catch((error) => {
+      if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+        throw new AppError(504, 'WIKI_TIMEOUT', 'IQ.wiki took too long to respond.', true);
+      }
+      throw new AppError(502, 'WIKI_UNAVAILABLE', 'The IQ.wiki article could not be loaded.', true);
+    });
+
+    if (![301, 302, 303, 307, 308].includes(response.status)) break;
+    const location = response.headers.get('location');
+    try {
+      await response.body?.cancel();
+    } catch {
+      // Cleanup errors must not hide redirect validation failures.
+    }
+    if (!location || redirectCount === 3) {
+      throw new AppError(502, 'WIKI_UNAVAILABLE', 'IQ.wiki returned an invalid redirect.', true);
+    }
+    try {
+      currentUrl = assertIqWikiUrl(new URL(location, currentUrl).toString());
+    } catch {
+      throw new AppError(502, 'WIKI_UNAVAILABLE', 'IQ.wiki returned an unsafe redirect.', true);
+    }
+    const redirectedCache = wikiCache.get(currentUrl);
+    if (redirectedCache) {
+      wikiCache.set(url, redirectedCache, 600000);
+      return redirectedCache;
+    }
+  }
+
+  if (!response.ok) {
+    await cancelResponseBody(response);
+    throw new AppError(502, 'WIKI_UNAVAILABLE', `IQ.wiki returned ${response.status}.`, true);
+  }
   const type = response.headers.get('content-type') || '';
-  if (!type.includes('text/html')) throw new AppError(422, 'INVALID_WIKI_CONTENT', 'The URL did not return an HTML article.');
+  if (!type.includes('text/html')) {
+    await cancelResponseBody(response);
+    throw new AppError(422, 'INVALID_WIKI_CONTENT', 'The URL did not return an HTML article.');
+  }
   const declaredSize = Number(response.headers.get('content-length') || 0);
-  if (declaredSize > 2000000) throw new AppError(413, 'WIKI_TOO_LARGE', 'The IQ.wiki article is too large.');
+  if (declaredSize > 2000000) {
+    await cancelResponseBody(response);
+    throw new AppError(413, 'WIKI_TOO_LARGE', 'The IQ.wiki article is too large.');
+  }
   const html = await readResponseText(response);
   const extracted = extractWikiText(html);
   if (extracted.rawText.length < 180) {
@@ -158,11 +199,12 @@ async function loadWiki(rawUrl) {
   }
   const wiki = {
     title: extracted.title || 'IQ.wiki article',
-    url,
+    url: currentUrl,
     summary: extracted.rawText.slice(0, 420),
     rawText: extracted.rawText,
     loadMode: 'live IQ.wiki article'
   };
+  if (currentUrl !== url) wikiCache.set(currentUrl, wiki, 600000);
   wikiCache.set(url, wiki, 600000);
   return wiki;
 }
@@ -190,7 +232,7 @@ Article:
     return `${shared}
 Create a grounded ${VIDEO_DURATION_SECONDS}-second vertical video production plan.
 The fixed style is ${VIDEO_STYLE_DESCRIPTION}. Keep it accurate, energetic, visually specific, and non-sensational.
-Return exactly this shape: {"hooks":["hook 1","hook 2","hook 3","hook 4","hook 5"],"voiceover":"the complete narration","scenes":[{"time":"0-5s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"},{"time":"5-10s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"},{"time":"10-15s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"}],"cta":"short IQ.wiki CTA"}.
+Return exactly this shape: {"hooks":["one strong opening line"],"voiceover":"the complete narration","scenes":[{"time":"0-5s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"},{"time":"5-10s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"},{"time":"10-15s","visual":"specific topic-related visual direction","caption":"max five words","voiceover":"the narration spoken during this scene","source_fact":"the article fact supporting this scene"}],"cta":"short IQ.wiki CTA"}.
 The top-level voiceover must be the scene voiceovers joined in order. Keep that narration to no more than ${VIDEO_MAX_NARRATION_WORDS} words total. Keep every caption to no more than five words.
 Visuals must depict article entities, products, events, places, timelines, metrics, or processes. No random abstract graphics.`;
   }
@@ -219,7 +261,7 @@ export async function callOpenRouter(
     const remainingModels = models.length - index;
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) break;
-    const timeoutCap = index === 0 && model === 'openrouter/free'
+    const timeoutCap = model === 'openrouter/free'
       ? ROUTER_TIMEOUT_MS
       : FALLBACK_TIMEOUT_MS;
     const timeoutMs = Math.min(
@@ -271,48 +313,94 @@ export async function reuseInflight(inflight, key, create) {
   }
 }
 
-export function validateGeneratedResult(action, value) {
+export function validateGeneratedResult(action, value, wiki = null) {
+  value = unwrapGeneratedValue(action, value);
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalidModelResult();
 
   if (action === 'video_scenario') {
-    const rawScenes = value.scenes ?? value.scene_plan ?? value.scenePlan ?? value.storyboard ?? value.shots;
+    const rawScenes = normalizeArrayLike(
+      value.scenes ?? value.scene_plan ?? value.scenePlan ?? value.storyboard ?? value.shots
+    );
+    const fallbackFacts = normalizeArrayLike(
+      value.source_facts ?? value.sourceFacts ?? value.facts ?? value.grounding
+    );
+    const articleFacts = extractArticleSourceFacts(wiki?.rawText);
     const scenes = requiredArray(
       rawScenes,
       VIDEO_SCENE_TIMES.length,
       VIDEO_SCENE_TIMES.length
     ).map((scene, index) => {
+      const sceneValue = typeof scene === 'string' ? { visual: scene } : scene;
       return {
         time: VIDEO_SCENE_TIMES[index],
         visual: requiredText(
-          scene?.visual ?? scene?.visual_direction ?? scene?.description ?? scene?.scene ?? scene?.visuals,
+          sceneValue?.visual
+            ?? sceneValue?.visual_direction
+            ?? sceneValue?.description
+            ?? sceneValue?.scene
+            ?? sceneValue?.visuals,
           500
         ),
         caption: limitWords(
-          optionalText(scene?.caption ?? scene?.on_screen_text ?? scene?.onScreenText ?? scene?.text, 100),
+          optionalText(
+            sceneValue?.caption
+              ?? sceneValue?.on_screen_text
+              ?? sceneValue?.onScreenText
+              ?? sceneValue?.text,
+            100
+          ),
           5
         ),
-        voiceover: optionalText(scene?.voiceover ?? scene?.narration ?? scene?.script, 500),
-        source_fact: requiredText(
-          scene?.source_fact
-            ?? scene?.sourceFact
-            ?? scene?.fact
-            ?? scene?.source
-            ?? scene?.supporting_fact
-            ?? scene?.article_fact,
+        voiceover: optionalText(
+          sceneValue?.voiceover ?? sceneValue?.narration ?? sceneValue?.script,
+          500
+        ),
+        source_fact: optionalText(
+          sceneValue?.source_fact
+            ?? sceneValue?.sourceFact
+            ?? sceneValue?.fact
+            ?? sceneValue?.source
+            ?? sceneValue?.supporting_fact
+            ?? sceneValue?.article_fact,
           500
         )
       };
     });
-    const sceneNarration = scenes.map((scene) => scene.voiceover).filter(Boolean).join(' ');
-    const voiceover = limitWords(
-      requiredText(optionalText(value.voiceover ?? value.narration ?? value.script, 3000) || sceneNarration, 3000),
-      VIDEO_MAX_NARRATION_WORDS
-    );
-    let remainingNarrationWords = VIDEO_MAX_NARRATION_WORDS;
-    for (const scene of scenes) {
-      scene.voiceover = limitWords(scene.voiceover, remainingNarrationWords);
-      remainingNarrationWords -= countWords(scene.voiceover);
+    scenes.forEach((scene, index) => {
+      scene.source_fact = requiredText(
+        scene.source_fact
+          || extractSourceFact(fallbackFacts?.[index])
+          || articleFacts[index],
+        500
+      );
+    });
+
+    const suppliedVoiceover = optionalText(value.voiceover ?? value.narration ?? value.script, 3000);
+    if (!scenes.every((scene) => scene.voiceover) && suppliedVoiceover) {
+      const narrationWords = limitWords(suppliedVoiceover, VIDEO_MAX_NARRATION_WORDS)
+        .split(/\s+/)
+        .filter(Boolean);
+      scenes.forEach((scene, index) => {
+        if (scene.voiceover) return;
+        const start = Math.floor((index * narrationWords.length) / scenes.length);
+        const end = Math.floor(((index + 1) * narrationWords.length) / scenes.length);
+        scene.voiceover = narrationWords.slice(start, end).join(' ');
+      });
     }
+
+    let remainingWords = VIDEO_MAX_NARRATION_WORDS;
+    scenes.forEach((scene, index) => {
+      const reservedWords = scenes.length - index - 1;
+      scene.voiceover = requiredText(
+        limitWords(scene.voiceover, remainingWords - reservedWords),
+        500
+      );
+      remainingWords -= countWords(scene.voiceover);
+    });
+    const voiceover = requiredText(
+      scenes.map((scene) => scene.voiceover).join(' '),
+      3000
+    );
     return {
       hooks: normalizeHooks(value.hooks ?? value.hook, voiceover),
       voiceover,
@@ -346,6 +434,77 @@ export function validateGeneratedResult(action, value) {
   }
 
   invalidModelResult();
+}
+
+function unwrapGeneratedValue(action, value) {
+  let current = value;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return current;
+    if (hasExpectedRoot(action, current)) return current;
+    const actionSpecific = action === 'video_scenario'
+      ? current.video_plan ?? current.videoPlan ?? current.scenario
+      : action === 'funding_timeline'
+        ? current.timeline
+        : current.story;
+    const candidate = actionSpecific ?? current.result ?? current.data ?? current.output;
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return current;
+    current = candidate;
+  }
+  return current;
+}
+
+function hasExpectedRoot(action, value) {
+  if (action === 'video_scenario') {
+    return (value.scenes ?? value.scene_plan ?? value.scenePlan ?? value.storyboard ?? value.shots) != null;
+  }
+  if (action === 'funding_timeline') return value.events != null;
+  if (action === 'crypto_lore') return value.chapters != null;
+  return false;
+}
+
+function normalizeArrayLike(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === 'object') return Object.values(value);
+  return value;
+}
+
+function extractSourceFact(value) {
+  if (typeof value === 'string') return value;
+  return optionalText(
+    value?.source_fact ?? value?.sourceFact ?? value?.fact ?? value?.text ?? value?.claim,
+    500
+  );
+}
+
+function extractArticleSourceFacts(rawText) {
+  if (typeof rawText !== 'string') return [];
+  const normalized = rawText.replace(/\s+/g, ' ').trim();
+  if (!normalized) return [];
+  let sentences = normalized
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length >= 30);
+  if (sentences.length < VIDEO_SCENE_TIMES.length) {
+    const words = normalized.split(/\s+/);
+    if (words.length >= VIDEO_SCENE_TIMES.length) {
+      const chunkSize = Math.ceil(words.length / VIDEO_SCENE_TIMES.length);
+      sentences = VIDEO_SCENE_TIMES
+        .map((_, index) => words.slice(index * chunkSize, (index + 1) * chunkSize).join(' ').trim())
+        .filter(Boolean);
+    } else {
+      const chunkSize = Math.ceil(normalized.length / VIDEO_SCENE_TIMES.length);
+      sentences = VIDEO_SCENE_TIMES
+        .map((_, index) => normalized.slice(index * chunkSize, (index + 1) * chunkSize).trim())
+        .filter(Boolean);
+    }
+  }
+  return VIDEO_SCENE_TIMES.map((_, index) => {
+    const position = Math.min(
+      sentences.length - 1,
+      Math.floor((index * sentences.length) / VIDEO_SCENE_TIMES.length)
+    );
+    return (sentences[position] || normalized).slice(0, 500);
+  });
 }
 
 function requiredArray(value, maxLength, minLength = 1) {
@@ -417,7 +576,7 @@ async function requestOpenRouter(prompt, _host, model, timeoutMs) {
   const response = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      Authorization: `Bearer ${String(process.env.OPENROUTER_API_KEY || '').trim()}`,
       'Content-Type': 'application/json',
       'HTTP-Referer': getOpenRouterReferer(),
       'X-Title': 'IQ.wiki Video Studio'
@@ -431,14 +590,14 @@ async function requestOpenRouter(prompt, _host, model, timeoutMs) {
     throw new AppError(503, 'FREE_MODEL_UNAVAILABLE', 'The free model is unavailable.', true);
   });
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      throw new AppError(503, 'CONFIGURATION_ERROR', 'Free AI generation credentials are invalid.');
+    let payload = null;
+    try {
+      const responseText = await readBoundedResponseText(response, 65536);
+      payload = responseText ? JSON.parse(responseText) : null;
+    } catch {
+      // The HTTP status still provides a reliable fallback classification.
     }
-    const code = response.status === 429 ? 'FREE_MODEL_QUOTA' : 'FREE_MODEL_UNAVAILABLE';
-    const message = response.status === 429
-      ? 'The free model quota is currently exhausted. Try again later.'
-      : 'No approved free model is currently available.';
-    throw new AppError(response.status === 429 ? 429 : 503, code, message, true);
+    throw classifyOpenRouterFailure(response.status, payload);
   }
   let data;
   try {
@@ -452,15 +611,43 @@ async function requestOpenRouter(prompt, _host, model, timeoutMs) {
     );
   }
   if (data?.error) {
-    const quota = Number(data.error.code) === 429;
-    throw new AppError(
-      quota ? 429 : 503,
-      quota ? 'FREE_MODEL_QUOTA' : 'FREE_MODEL_UNAVAILABLE',
-      quota ? 'Free model capacity is full.' : 'Free model is unavailable.',
+    throw classifyOpenRouterFailure(200, data);
+  }
+  return parseStrictJson(extractModelContent(data));
+}
+
+export function classifyOpenRouterFailure(status, payload = null) {
+  if (status === 401 || status === 403) {
+    return new AppError(503, 'CONFIGURATION_ERROR', 'Free AI generation credentials are invalid.');
+  }
+  const details = [
+    payload?.error?.code,
+    payload?.error?.message,
+    payload?.error?.metadata?.raw,
+    payload?.code,
+    payload?.message
+  ]
+    .filter((value) => typeof value === 'string' || typeof value === 'number')
+    .join(' ')
+    .toLowerCase();
+  const quota = status === 402
+    || status === 429
+    || /(^|\D)(402|429)(\D|$)/.test(details)
+    || /(rate[\s_-]*limit|quota|capacity|insufficient[\s_-]*(credit|fund)|free[\s_-]*(tier|limit))/.test(details);
+  if (quota) {
+    return new AppError(
+      429,
+      'FREE_MODEL_QUOTA',
+      'The free model quota is currently exhausted. Try again later.',
       true
     );
   }
-  return parseStrictJson(extractModelContent(data));
+  return new AppError(
+    503,
+    'FREE_MODEL_UNAVAILABLE',
+    'No approved free model is currently available.',
+    true
+  );
 }
 
 function enforceRateLimit(result) {

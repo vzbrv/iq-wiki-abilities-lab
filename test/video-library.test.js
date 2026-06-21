@@ -33,6 +33,16 @@ test("20 percent word-count change is material", () => {
   assert.equal(result.reason, "length_changed");
 });
 
+test("20 percent signature rewrite is material", () => {
+  const result = classifyArticleChange(
+    snapshot({ signature: ["a", "b", "c", "d", "e"] }),
+    snapshot({ exactHash: "b", signature: ["a", "b", "c", "d"] }),
+  );
+
+  assert.equal(result.material, true);
+  assert.equal(result.reason, "content_rewritten");
+});
+
 test("minor edits accumulate against the last material revision", async () => {
   const service = new VideoLibraryService(new MemoryVideoLibraryStore());
   const phrase = "alpha beta gamma delta epsilon zeta eta theta iota kappa ";
@@ -63,16 +73,18 @@ test("minor edits accumulate against the last material revision", async () => {
   assert.equal(material.asset, null);
 });
 
-test("title and factual value changes are material", () => {
+test("title changes are material but fact metadata follows the 20 percent threshold", () => {
   const previous = snapshot({ facts: ["15", "0xabc"] });
   assert.equal(
     classifyArticleChange(previous, snapshot({ exactHash: "b", normalizedTitle: "renamed" })).reason,
     "title_changed",
   );
-  assert.equal(
-    classifyArticleChange(previous, snapshot({ exactHash: "c", facts: ["20", "0xabc"] })).reason,
-    "facts_changed",
+  const factEdit = classifyArticleChange(
+    previous,
+    snapshot({ exactHash: "c", facts: ["20", "0xabc"] }),
   );
+  assert.equal(factEdit.material, false);
+  assert.equal(factEdit.reason, "minor_edit");
 });
 
 test("malformed article payload returns a client error", () => {
@@ -99,6 +111,20 @@ test("malformed video asset payload returns a client error", async () => {
     service.publishAsset(null),
     (error) => error.code === "INVALID_VIDEO_ASSET" && error.status === 400,
   );
+
+  for (const playbackUrl of [
+    "https://127.0.0.1/video.mp4",
+    "https://[::1]/video.mp4",
+  ]) {
+    await assert.rejects(
+      service.publishAsset({
+        url: "https://iq.wiki/wiki/example",
+        revision: "revision",
+        playbackUrl,
+      }),
+      (error) => error.code === "INVALID_VIDEO_ASSET" && error.status === 400,
+    );
+  }
 });
 
 test("unconfigured production library reads as empty but rejects writes", async () => {
@@ -137,6 +163,8 @@ test("rejects unsafe video library endpoints and blank tokens", () => {
     "http://storage.example.com",
     "https://user:pass@storage.example.com",
     "https://storage.example.com/?command=GET",
+    "https://127.0.0.1",
+    "https://[::1]",
   ]) {
     assert.throws(
       () => new RestVideoLibraryStore({ url, token: "token" }),
@@ -250,6 +278,28 @@ test("returned library records cannot mutate stored state", async () => {
   assert.equal(stored.asset.playbackUrl, "https://cdn.example.com/defensive-copy.mp4");
 });
 
+test("memory library bounds, expires, and isolates records", async () => {
+  let now = 0;
+  const store = new MemoryVideoLibraryStore({
+    maxEntries: 2,
+    ttlMs: 100,
+    now: () => now,
+  });
+  await store.set("a", { value: 1 });
+  await store.set("b", { value: 2 });
+
+  const copy = await store.get("a");
+  copy.value = 99;
+  await store.set("c", { value: 3 });
+
+  assert.equal(await store.get("b"), null);
+  assert.deepEqual(await store.get("a"), { value: 1 });
+
+  now = 101;
+  assert.equal(await store.get("a"), null);
+  assert.equal(await store.get("c"), null);
+});
+
 test("REST library rejects oversized upstream responses", async () => {
   const store = new RestVideoLibraryStore({
     url: "https://storage.example.com",
@@ -298,6 +348,16 @@ test("library preserves minor edits and invalidates material edits", async () =>
   });
   assert.equal(unchanged.state, "ready");
   assert.equal(unchanged.asset.playbackUrl, published.asset.playbackUrl);
+
+  const retitled = await service.syncArticle({
+    ...article,
+    title: "IQ wiki",
+    rawText: `${baseText} Minor clarification.`,
+  });
+  assert.equal(retitled.state, "ready");
+  const retitledLookup = await service.lookup(article.url);
+  assert.equal(retitledLookup.state, "ready");
+  assert.equal(retitledLookup.article.title, "IQ wiki");
 
   const changed = await service.syncArticle({ ...article, title: "IQ Wiki Protocol" });
   assert.equal(changed.state, "needs_generation");

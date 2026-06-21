@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { AppError } from '../lib/foundation.js';
 import { getVideoConfig, publicVideoConfig } from '../lib/video/config.js';
 import { VIDEO_DURATION_SECONDS, VIDEO_STYLE } from '../lib/video/profile.js';
 import { MockVideoProvider } from '../lib/video/providers/mock.js';
-import { VideoJobService, createVideoService } from '../lib/video/service.js';
+import { MemoryVideoJobStore, VideoJobService, createVideoService } from '../lib/video/service.js';
 import { sendError } from '../api/video.js';
 
 const input = {
@@ -87,6 +88,60 @@ test('external providers require explicit spending caps', () => {
     VIDEO_MAX_JOB_USD: '0.50',
     VIDEO_DAILY_CAP_USD: '5'
   }).status, 'ready');
+  assert.throws(() => getVideoConfig({
+    ...env,
+    VIDEO_MAX_JOB_USD: '0.50',
+    VIDEO_DAILY_CAP_USD: '5',
+    NODE_ENV: 'production'
+  }), { code: 'VIDEO_DURABLE_STATE_REQUIRED' });
+});
+
+test('video provider timeout is bounded', () => {
+  const env = {
+    VIDEO_ENGINE_ENABLED: 'true',
+    VIDEO_PROVIDER: 'mock',
+    VIDEO_PROVIDER_ALLOWLIST: 'mock',
+    VIDEO_MODEL: 'mock-video-v1',
+    VIDEO_MODEL_ALLOWLIST: 'mock-video-v1',
+    VIDEO_MOCK_ENABLED: 'true'
+  };
+
+  assert.equal(getVideoConfig(env).providerTimeoutMs, 30000);
+  assert.throws(
+    () => getVideoConfig({ ...env, VIDEO_PROVIDER_TIMEOUT_MS: '0' }),
+    { code: 'VIDEO_CONFIGURATION_ERROR' }
+  );
+});
+
+test('memory job store expires old jobs and remains bounded', () => {
+  let now = 1000;
+  const store = new MemoryVideoJobStore({ maxEntries: 2, ttlMs: 100, now: () => now });
+
+  const first = { id: 'first', state: 'queued', createdAt: new Date(now).toISOString() };
+  store.set(first);
+  first.state = 'failed';
+  const retrieved = store.get('first');
+  retrieved.state = 'cancelled';
+  assert.equal(store.get('first').state, 'queued');
+  store.set({ id: 'second', createdAt: new Date(now).toISOString() });
+  store.set({ id: 'third', createdAt: new Date(now).toISOString() });
+
+  assert.equal(store.get('first'), undefined);
+  assert.equal(store.get('second').id, 'second');
+  assert.equal(store.get('third').id, 'third');
+
+  now += 101;
+  store.set({ id: 'fresh', createdAt: new Date(now).toISOString() });
+  assert.equal(store.get('first'), undefined);
+  assert.equal(store.get('third'), undefined);
+  assert.equal(store.get('fresh').id, 'fresh');
+});
+
+test('memory job store rejects invalid limits and records', () => {
+  assert.throws(() => new MemoryVideoJobStore({ maxEntries: 0 }), TypeError);
+  assert.throws(() => new MemoryVideoJobStore({ ttlMs: 1.5 }), TypeError);
+  assert.throws(() => new MemoryVideoJobStore({ now: null }), TypeError);
+  assert.throws(() => new MemoryVideoJobStore().set({}), TypeError);
 });
 
 test('provider integrations must implement the full lifecycle', () => {
@@ -96,6 +151,15 @@ test('provider integrations must implement the full lifecycle', () => {
     }),
     { code: 'VIDEO_PROVIDER_NOT_IMPLEMENTED' }
   );
+});
+
+test('video jobs require narration for every scene', async () => {
+  const service = createVideoService(config(), {
+    mock: new MockVideoProvider()
+  });
+  const invalid = structuredClone(input);
+  invalid.scenario.scenes[1].voiceover = '';
+  await assert.rejects(service.createJob(invalid), { code: 'INVALID_VIDEO_INPUT' });
 });
 
 test('job lifecycle supports polling, playback, cancellation, and retry', async () => {
@@ -203,6 +267,77 @@ test('rejects malformed provider create and polling responses', async () => {
     invalidPlayback.getJob(playbackJob.id),
     { code: 'VIDEO_PROVIDER_INVALID_RESPONSE' }
   );
+
+  const privatePlayback = new VideoJobService({
+    config: config({ provider: 'future' }),
+    provider: {
+      async create() {
+        return { providerJobId: 'provider-job', state: 'queued' };
+      },
+      async poll() {
+        return { state: 'completed', playbackUrl: 'https://127.0.0.1/video.mp4' };
+      }
+    }
+  });
+  const privatePlaybackJob = await privatePlayback.createJob(input);
+  await assert.rejects(
+    privatePlayback.getJob(privatePlaybackJob.id),
+    { code: 'VIDEO_PROVIDER_INVALID_RESPONSE' }
+  );
+});
+
+test('normalizes provider failures and malformed job IDs', async () => {
+  const service = new VideoJobService({
+    config: config({ provider: 'future' }),
+    provider: {
+      async create() {
+        throw new AppError(418, 'PROVIDER_SECRET', 'Provider detail');
+      }
+    }
+  });
+
+  await assert.rejects(
+    service.createJob(input),
+    (error) =>
+      error.code === 'VIDEO_PROVIDER_UNAVAILABLE' &&
+      error.status === 503 &&
+      error.retryable === true
+  );
+  await assert.rejects(
+    service.getJob('../secret'),
+    (error) => error.code === 'INVALID_VIDEO_JOB_ID' && error.status === 400
+  );
+});
+
+test('times out provider calls and hides provider failure details', async () => {
+  const hanging = new VideoJobService({
+    config: config({ provider: 'future', providerTimeoutMs: 5 }),
+    provider: {
+      create() {
+        return new Promise(() => {});
+      }
+    }
+  });
+  await assert.rejects(
+    hanging.createJob(input),
+    (error) => error.code === 'VIDEO_PROVIDER_UNAVAILABLE' && error.retryable === true
+  );
+
+  const failing = new VideoJobService({
+    config: config({ provider: 'future' }),
+    provider: {
+      async create() {
+        return { providerJobId: 'provider-job', state: 'queued' };
+      },
+      async poll() {
+        return { state: 'failed', error: 'secret provider diagnostic' };
+      }
+    }
+  });
+  const job = await failing.createJob(input);
+  const failed = await failing.getJob(job.id);
+  assert.equal(failed.error, 'Video generation failed.');
+  assert.doesNotMatch(JSON.stringify(failed), /secret provider diagnostic/);
 });
 
 test('provider polling cannot move jobs backwards or reduce progress', async () => {

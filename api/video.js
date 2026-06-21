@@ -45,6 +45,7 @@ export default async function handler(req, res) {
       throw new AppError(405, 'METHOD_NOT_ALLOWED', 'Use POST for video changes.');
     }
     if (action === 'sync_article' || action === 'publish_asset') {
+      enforceRateLimit(videoLimit(getClientId(req)));
       assertLibraryToken(req);
       const currentLibrary = getLibrary();
       const video = action === 'sync_article'
@@ -117,11 +118,11 @@ function setHeaders(req, res, requestId) {
 }
 
 function assertLibraryToken(req) {
-  const expected = process.env.VIDEO_LIBRARY_SYNC_TOKEN;
+  const expected = String(process.env.VIDEO_LIBRARY_SYNC_TOKEN || '').trim();
   if (!expected) {
     throw new AppError(503, 'VIDEO_LIBRARY_SYNC_NOT_CONFIGURED', 'Video library publishing is not configured.');
   }
-  const supplied = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  const supplied = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
   const actualBuffer = Buffer.from(supplied);
   const expectedBuffer = Buffer.from(expected);
   if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) {

@@ -47,7 +47,7 @@ Configured models are tried first, followed by the built-in free-only fallback
 list. `OPENROUTER_MODEL` remains supported when `OPENROUTER_MODELS` is unset.
 The app validates every candidate and never attempts a paid model.
 
-Use `?embed=1&url=<encoded-iq-wiki-url>` for a page-specific compact widget. The URL is prefilled, but lookup and generation begin only after the visitor clicks. Use an HTTPS `?api=https://api.example` only when the static frontend and API are hosted separately.
+Use `?embed=1&url=<encoded-iq-wiki-url>` for a page-specific compact widget. The URL is prefilled, but lookup and generation begin only after the visitor clicks. For split hosting, set the `iq-api-base` meta tag or `window.__IQ_WIKI_API_BASE__` to the explicit HTTPS API origin. The `?api=` parameter can only select that configured origin, except for localhost development.
 
 ## Verify
 

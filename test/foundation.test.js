@@ -12,6 +12,7 @@ import {
   extractWikiText,
   getFreeModelCandidates,
   getOpenRouterReferer,
+  isPublicHttpsUrl,
   readJsonBody,
   readPositiveInteger,
   parseStrictJson,
@@ -22,7 +23,9 @@ import {
   buildPrompt,
   buildOpenRouterPayload,
   callOpenRouter,
+  classifyOpenRouterFailure,
   getConfiguredModels,
+  loadWiki,
   readResponseText,
   reuseInflight,
   sendError,
@@ -49,7 +52,7 @@ test('limits article text sent to free models', () => {
   const prompt = buildPrompt('video_scenario', {
     title: 'Solana',
     url: 'https://iq.wiki/wiki/solana',
-    rawText: `${'a'.repeat(14000)}SECRET_TAIL`
+    rawText: `${'a'.repeat(8000)}SECRET_TAIL`
   });
 
   assert.doesNotMatch(prompt, /SECRET_TAIL/);
@@ -71,6 +74,40 @@ test('accepts direct HTTPS IQ.wiki article URLs', () => {
     assertIqWikiUrl('https://iq.wiki/wiki/solana?utm_source=test#history'),
     'https://iq.wiki/wiki/solana'
   );
+  assert.equal(assertIqWikiUrl('https://iq.wiki/wiki/solana/'), 'https://iq.wiki/wiki/solana');
+});
+
+test('follows only safe IQ.wiki article redirects', async () => {
+  const calls = [];
+  const wiki = await loadWiki('https://iq.wiki/wiki/redirect-source/', async (url, options) => {
+    calls.push({ url, redirect: options.redirect });
+    if (calls.length === 1) {
+      return new Response(null, {
+        status: 308,
+        headers: { location: '/wiki/redirect-target' }
+      });
+    }
+    return new Response(`<html><title>Redirected</title><body>${'Grounded article fact. '.repeat(20)}</body></html>`, {
+      status: 200,
+      headers: { 'content-type': 'text/html' }
+    });
+  });
+
+  assert.deepEqual(calls, [
+    { url: 'https://iq.wiki/wiki/redirect-source', redirect: 'manual' },
+    { url: 'https://iq.wiki/wiki/redirect-target', redirect: 'manual' }
+  ]);
+  assert.equal(wiki.url, 'https://iq.wiki/wiki/redirect-target');
+});
+
+test('rejects redirects outside IQ.wiki articles', async () => {
+  await assert.rejects(
+    loadWiki('https://iq.wiki/wiki/unsafe-redirect', async () => new Response(null, {
+      status: 302,
+      headers: { location: 'https://example.com/wiki/stolen' }
+    })),
+    { code: 'WIKI_UNAVAILABLE' }
+  );
 });
 
 test('accepts localized IQ.wiki article URLs', () => {
@@ -89,6 +126,30 @@ test('rejects non-IQ.wiki and non-article URLs', () => {
   assert.throws(() => assertIqWikiUrl('https://attacker.iq.wiki/wiki/solana'), AppError);
   assert.throws(() => assertIqWikiUrl('https://iq.wiki/rank/cryptocurrencies'), AppError);
   assert.throws(() => assertIqWikiUrl('https://iq.wiki/wiki/'), AppError);
+});
+
+test('accepts only public HTTPS media URLs', () => {
+  assert.equal(isPublicHttpsUrl('https://cdn.example.com/video.mp4'), true);
+  assert.equal(isPublicHttpsUrl('https://203.1.1.1/video.mp4'), true);
+  assert.equal(isPublicHttpsUrl('https://[2001:db80::1]/video.mp4'), true);
+
+  for (const url of [
+    'http://cdn.example.com/video.mp4',
+    'https://user:pass@cdn.example.com/video.mp4',
+    'https://localhost/video.mp4',
+    'https://127.0.0.1/video.mp4',
+    'https://10.0.0.1/video.mp4',
+    'https://169.254.169.254/latest/meta-data',
+    'https://192.0.2.1/video.mp4',
+    'https://192.88.99.1/video.mp4',
+    'https://198.51.100.1/video.mp4',
+    'https://203.0.113.1/video.mp4',
+    'https://[::1]/video.mp4',
+    'https://[2001:db8::1]/video.mp4',
+    'https://[fd00::1]/video.mp4'
+  ]) {
+    assert.equal(isPublicHttpsUrl(url), false, url);
+  }
 });
 
 test('enforces JSON object type and size after platform parsing', async () => {
@@ -121,6 +182,21 @@ test('stops reading IQ.wiki responses at the byte limit', async () => {
   );
 });
 
+test('cancels responses whose declared size exceeds the byte limit', async () => {
+  let cancelled = false;
+  const response = {
+    headers: new Headers({ 'content-length': '9' }),
+    body: {
+      cancel: async () => {
+        cancelled = true;
+      }
+    }
+  };
+
+  await assert.rejects(readBoundedResponseText(response, 8), RangeError);
+  assert.equal(cancelled, true);
+});
+
 test('does not require provider-specific JSON mode from free models', () => {
   const payload = buildOpenRouterPayload('prompt', 'openrouter/free');
   assert.equal(payload.model, 'openrouter/free');
@@ -149,9 +225,10 @@ test('keeps built-in free fallbacks when models are configured', () => {
   const models = getConfiguredModels({
     OPENROUTER_MODELS: 'meta-llama/custom-model:free'
   });
-  assert.equal(models[0], 'openrouter/free');
+  assert.equal(models[0], 'meta-llama/custom-model:free');
+  assert.equal(models[1], 'openrouter/free');
   assert.ok(models.includes('meta-llama/custom-model:free'));
-  assert.ok(models.includes('openai/gpt-oss-120b:free'));
+  assert.ok(models.includes('openai/gpt-oss-20b:free'));
   assert.equal(models.every((model) => model === 'openrouter/free' || model.endsWith(':free')), true);
 });
 
@@ -189,7 +266,7 @@ test('tries every free model and distinguishes non-quota failures', async () => 
     (error) => error.code === 'FREE_MODELS_UNAVAILABLE' && error.status === 503
   );
   assert.deepEqual(calls.map(({ model }) => model), models);
-  assert.equal(calls[0].timeoutMs, 24000);
+  assert.equal(calls[0].timeoutMs, 14000);
   assert.equal(calls.slice(1).every(({ timeoutMs }) => timeoutMs >= 1000 && timeoutMs <= 12000), true);
 });
 
@@ -259,6 +336,7 @@ test('validates complete grounded video plans', () => {
   });
   assert.equal(plan.scenes[0].visual, 'Show the protocol interface 1');
   assert.deepEqual(plan.scenes.map((scene) => scene.time), ['0-5s', '5-10s', '10-15s']);
+  assert.equal(plan.voiceover, 'Scene narration Scene narration Scene narration');
   const normalized = validateGeneratedResult('video_scenario', {
     hook: 'Hook',
     narration: Array.from({ length: 50 }, () => 'word').join(' '),
@@ -266,14 +344,31 @@ test('validates complete grounded video plans', () => {
       timestamp: '0-15s',
       visual_direction: 'Show the protocol interface',
       on_screen_text: 'one two three four five six',
-      narration: 'Scene narration',
+      narration: '',
       fact: 'The article says the protocol launched.'
     }))
   });
   assert.deepEqual(normalized.hooks, ['Hook']);
   assert.equal(normalized.voiceover.split(' ').length, 42);
+  assert.equal(
+    normalized.scenes.map((scene) => scene.voiceover).join(' '),
+    normalized.voiceover
+  );
   assert.equal(normalized.scenes[0].caption, 'one two three four five');
-  const derivedNarration = validateGeneratedResult('video_scenario', {
+  const uneven = validateGeneratedResult('video_scenario', {
+    hooks: ['Hook'],
+    scenes: buildScenes((index) => ({
+      visual: 'Show the protocol interface',
+      voiceover: Array.from(
+        { length: index === 0 ? 20 : 11 },
+        (_, wordIndex) => `scene${index + 1}word${wordIndex + 1}`
+      ).join(' '),
+      source_fact: 'The article says the protocol launched.'
+    }))
+  });
+  assert.equal(countPlanWords(uneven), 42);
+  assert.equal(uneven.scenes[0].voiceover.split(/\s+/).length, 20);
+  assert.throws(() => validateGeneratedResult('video_scenario', {
     hooks: ['Hook'],
     voiceover: '',
     scenes: buildScenes((index) => ({
@@ -281,10 +376,22 @@ test('validates complete grounded video plans', () => {
       voiceover: index === 0 ? 'Use this scene narration' : '',
       source_fact: 'The article says the protocol launched.'
     }))
+  }), { code: 'INVALID_MODEL_RESPONSE' });
+  const partiallySupplied = validateGeneratedResult('video_scenario', {
+    hooks: ['Hook'],
+    voiceover: Array.from({ length: 42 }, (_, index) => `word${index + 1}`).join(' '),
+    scenes: buildScenes((index) => ({
+      visual: 'Show the protocol interface',
+      voiceover: index === 0 ? 'Keep this scene narration' : '',
+      source_fact: 'The article says the protocol launched.'
+    }))
   });
-  assert.equal(derivedNarration.voiceover, 'Use this scene narration');
+  assert.equal(partiallySupplied.scenes[0].voiceover, 'Keep this scene narration');
+  assert.ok(partiallySupplied.scenes.every((scene) => scene.voiceover));
+  assert.ok(partiallySupplied.scenes.every((scene) => scene.voiceover.split(/\s+/).length <= 14));
   const aliases = validateGeneratedResult('video_scenario', {
     script: 'A concise grounded narration for this article',
+    hooks: ['Alias hook'],
     storyboard: buildScenes(() => ({
       timestamp: '0-15s',
       description: 'Show topic-specific footage',
@@ -293,7 +400,7 @@ test('validates complete grounded video plans', () => {
       supporting_fact: 'Article fact'
     }))
   });
-  assert.deepEqual(aliases.hooks, ['A concise grounded narration for this article']);
+  assert.deepEqual(aliases.hooks, ['Alias hook']);
   assert.equal(aliases.scenes[0].visual, 'Show topic-specific footage');
   assert.equal(aliases.scenes[0].source_fact, 'Article fact');
   assert.throws(
@@ -326,6 +433,134 @@ test('validates complete grounded video plans', () => {
       })).slice(0, 2)
     }),
     (error) => error.code === 'INVALID_MODEL_RESPONSE'
+  );
+});
+
+test('recovers safe video-plan aliases from grounded article text', () => {
+  const plan = validateGeneratedResult('video_scenario', {
+    hook: 'A clear hook',
+    narration: 'A concise narration that explains the article across all three planned scenes.',
+    scenes: [
+      'Show the topic in a cinematic opening shot',
+      { description: 'Show the mechanism working clearly' },
+      { visual: 'Show the practical result for the viewer' }
+    ]
+  }, {
+    rawText: [
+      'The protocol launched to make digital transactions faster for its users.',
+      'It groups related operations before confirming them on the network.',
+      'The article says this design can reduce waiting time for participants.'
+    ].join(' ')
+  });
+
+  assert.equal(plan.scenes[0].visual, 'Show the topic in a cinematic opening shot');
+  assert.match(plan.scenes[0].source_fact, /protocol launched/);
+  assert.ok(plan.scenes.every((scene) => scene.source_fact));
+});
+
+test('creates distinct grounding facts from punctuation-free article text', () => {
+  const rawText = Array.from(
+    { length: 90 },
+    (_, index) => `articleword${index + 1}`
+  ).join(' ');
+  const plan = validateGeneratedResult('video_scenario', {
+    hook: 'A clear hook',
+    narration: 'A concise narration that explains the article across all three planned scenes.',
+    scenes: [
+      'Show the topic in a cinematic opening shot',
+      'Show how the topic works',
+      'Show the practical result'
+    ]
+  }, { rawText });
+
+  assert.equal(new Set(plan.scenes.map((scene) => scene.source_fact)).size, 3);
+  assert.match(plan.scenes[0].source_fact, /articleword1\b/);
+  assert.match(plan.scenes[2].source_fact, /articleword61\b/);
+});
+
+test('creates grounding facts from article text containing one long token', () => {
+  const plan = validateGeneratedResult('video_scenario', {
+    hook: 'A clear hook',
+    narration: 'A concise narration grounded in the supplied article across all three planned scenes.',
+    scenes: [
+      'Show the topic in a cinematic opening shot',
+      'Show how the topic works',
+      'Show the practical result'
+    ]
+  }, { rawText: 'a'.repeat(240) });
+
+  assert.equal(plan.scenes.length, 3);
+  assert.ok(plan.scenes.every((scene) => scene.source_fact.length > 0));
+});
+
+test('classifies OpenRouter quota and configuration failures accurately', () => {
+  assert.equal(classifyOpenRouterFailure(402).code, 'FREE_MODEL_QUOTA');
+  assert.equal(classifyOpenRouterFailure(429).status, 429);
+  assert.equal(
+    classifyOpenRouterFailure(200, {
+      error: { code: 'insufficient_credits', message: 'Free model capacity reached' }
+    }).code,
+    'FREE_MODEL_QUOTA'
+  );
+  assert.equal(classifyOpenRouterFailure(401).code, 'CONFIGURATION_ERROR');
+  assert.equal(classifyOpenRouterFailure(500).code, 'FREE_MODEL_UNAVAILABLE');
+});
+
+function countPlanWords(plan) {
+  return plan.voiceover.trim().split(/\s+/).length;
+}
+
+test('accepts wrapped plans with keyed scenes', () => {
+  const plan = validateGeneratedResult('video_scenario', {
+    result: {
+      data: {
+        video_plan: {
+          hook: 'A useful hook',
+          narration: 'One two three. Four five six. Seven eight nine.',
+          scenes: {
+            opening: {
+              narration: 'One two three.',
+              visual: 'Show the article subject.',
+              source_fact: 'Fact one.'
+            },
+            middle: {
+              narration: 'Four five six.',
+              visual: 'Explain the mechanism.',
+              source_fact: 'Fact two.'
+            },
+            closing: {
+              narration: 'Seven eight nine.',
+              visual: 'Show the practical result.',
+              source_fact: 'Fact three.'
+            }
+          }
+        }
+      }
+    }
+  });
+
+  assert.equal(plan.scenes.length, 3);
+  assert.equal(plan.voiceover, 'One two three. Four five six. Seven eight nine.');
+});
+
+test('accepts grounded facts returned separately from video scenes', () => {
+  const plan = validateGeneratedResult('video_scenario', {
+    hook: 'A useful hook',
+    narration: 'One two three. Four five six. Seven eight nine.',
+    facts: [
+      'Fact one from the article.',
+      { claim: 'Fact two from the article.' },
+      { source_fact: 'Fact three from the article.' }
+    ],
+    scenes: buildScenes((index) => ({
+      narration: `Scene ${index + 1} narration.`,
+      visual: `Show scene ${index + 1}.`
+    }))
+  });
+
+  assert.deepEqual(
+    plan.scenes.map((scene) => scene.source_fact),
+    ['Fact one from the article.', 'Fact two from the article.', 'Fact three from the article.']
   );
 });
 
@@ -488,6 +723,12 @@ test('normalizes free-provider response formats', () => {
   assert.equal(extractModelContent({
     choices: [{ message: { content: [{ type: 'text', text: '{"ok":' }, { type: 'text', text: 'true}' }] } }]
   }), '{"ok":true}');
+  assert.equal(extractModelContent({
+    choices: [{ message: { content: '', reasoning_content: '{"ok":true}' } }]
+  }), '{"ok":true}');
+  assert.deepEqual(parseStrictJson(extractModelContent({
+    choices: [{ message: { content: 'I will provide JSON.', reasoning: 'Analysis\n{"ok":true}' } }]
+  })), { ok: true });
   assert.throws(() => parseStrictJson([]), /invalid data/);
   assert.throws(() => extractModelContent({ choices: [] }), /no usable content/);
 });

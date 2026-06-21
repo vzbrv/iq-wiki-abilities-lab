@@ -1,18 +1,16 @@
-import { getFreeModelCandidates } from '../lib/foundation.js';
+import { getConfiguredModels } from '../api/generate.js';
 import { getVideoConfig } from '../lib/video/config.js';
 import { createVideoLibraryStore } from '../lib/video/library.js';
 import { createVideoService } from '../lib/video/service.js';
 
-const models = getFreeModelCandidates(
-  process.env.OPENROUTER_MODELS || process.env.OPENROUTER_MODEL || 'openrouter/free'
-);
+const models = getConfiguredModels();
 const config = getVideoConfig();
 createVideoService(config);
 createVideoLibraryStore(process.env);
 
-const libraryUrl = process.env.VIDEO_LIBRARY_REST_URL;
-const libraryToken = process.env.VIDEO_LIBRARY_REST_TOKEN;
-const librarySyncToken = process.env.VIDEO_LIBRARY_SYNC_TOKEN;
+const libraryUrl = String(process.env.VIDEO_LIBRARY_REST_URL || '').trim();
+const libraryToken = String(process.env.VIDEO_LIBRARY_REST_TOKEN || '').trim();
+const librarySyncToken = String(process.env.VIDEO_LIBRARY_SYNC_TOKEN || '').trim();
 if (Boolean(libraryUrl) !== Boolean(libraryToken)) {
   throw new Error('VIDEO_LIBRARY_REST_URL and VIDEO_LIBRARY_REST_TOKEN must be configured together.');
 }
