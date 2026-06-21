@@ -24,10 +24,10 @@ import {
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_FREE_MODELS = [
+  'openrouter/free',
   'openai/gpt-oss-20b:free',
   'google/gemma-4-26b-a4b-it:free',
-  'nvidia/nemotron-3-nano-30b-a3b:free',
-  'openrouter/free'
+  'nvidia/nemotron-3-nano-30b-a3b:free'
 ];
 const FREE_GENERATION_BUDGET_MS = 50000;
 const ROUTER_TIMEOUT_MS = 14000;
@@ -84,7 +84,7 @@ export default async function handler(req, res) {
         req.headers.host,
         models,
         requestOpenRouter,
-        (value) => validateGeneratedResult(action, value),
+        (value) => validateGeneratedResult(action, value, wiki),
         requestId
       ));
       resultCache.set(cacheKey, generated, 900000);
@@ -313,7 +313,7 @@ export async function reuseInflight(inflight, key, create) {
   }
 }
 
-export function validateGeneratedResult(action, value) {
+export function validateGeneratedResult(action, value, wiki = null) {
   value = unwrapGeneratedValue(action, value);
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalidModelResult();
 
@@ -324,36 +324,53 @@ export function validateGeneratedResult(action, value) {
     const fallbackFacts = normalizeArrayLike(
       value.source_facts ?? value.sourceFacts ?? value.facts ?? value.grounding
     );
+    const articleFacts = extractArticleSourceFacts(wiki?.rawText);
     const scenes = requiredArray(
       rawScenes,
       VIDEO_SCENE_TIMES.length,
       VIDEO_SCENE_TIMES.length
     ).map((scene, index) => {
+      const sceneValue = typeof scene === 'string' ? { visual: scene } : scene;
       return {
         time: VIDEO_SCENE_TIMES[index],
         visual: requiredText(
-          scene?.visual ?? scene?.visual_direction ?? scene?.description ?? scene?.scene ?? scene?.visuals,
+          sceneValue?.visual
+            ?? sceneValue?.visual_direction
+            ?? sceneValue?.description
+            ?? sceneValue?.scene
+            ?? sceneValue?.visuals,
           500
         ),
         caption: limitWords(
-          optionalText(scene?.caption ?? scene?.on_screen_text ?? scene?.onScreenText ?? scene?.text, 100),
+          optionalText(
+            sceneValue?.caption
+              ?? sceneValue?.on_screen_text
+              ?? sceneValue?.onScreenText
+              ?? sceneValue?.text,
+            100
+          ),
           5
         ),
-        voiceover: optionalText(scene?.voiceover ?? scene?.narration ?? scene?.script, 500),
+        voiceover: optionalText(
+          sceneValue?.voiceover ?? sceneValue?.narration ?? sceneValue?.script,
+          500
+        ),
         source_fact: optionalText(
-          scene?.source_fact
-            ?? scene?.sourceFact
-            ?? scene?.fact
-            ?? scene?.source
-            ?? scene?.supporting_fact
-            ?? scene?.article_fact,
+          sceneValue?.source_fact
+            ?? sceneValue?.sourceFact
+            ?? sceneValue?.fact
+            ?? sceneValue?.source
+            ?? sceneValue?.supporting_fact
+            ?? sceneValue?.article_fact,
           500
         )
       };
     });
     scenes.forEach((scene, index) => {
       scene.source_fact = requiredText(
-        scene.source_fact || extractSourceFact(fallbackFacts?.[index]),
+        scene.source_fact
+          || extractSourceFact(fallbackFacts?.[index])
+          || articleFacts[index],
         500
       );
     });
@@ -459,6 +476,37 @@ function extractSourceFact(value) {
   );
 }
 
+function extractArticleSourceFacts(rawText) {
+  if (typeof rawText !== 'string') return [];
+  const normalized = rawText.replace(/\s+/g, ' ').trim();
+  if (!normalized) return [];
+  let sentences = normalized
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length >= 30);
+  if (sentences.length < VIDEO_SCENE_TIMES.length) {
+    const words = normalized.split(/\s+/);
+    if (words.length >= VIDEO_SCENE_TIMES.length) {
+      const chunkSize = Math.ceil(words.length / VIDEO_SCENE_TIMES.length);
+      sentences = VIDEO_SCENE_TIMES
+        .map((_, index) => words.slice(index * chunkSize, (index + 1) * chunkSize).join(' ').trim())
+        .filter(Boolean);
+    } else {
+      const chunkSize = Math.ceil(normalized.length / VIDEO_SCENE_TIMES.length);
+      sentences = VIDEO_SCENE_TIMES
+        .map((_, index) => normalized.slice(index * chunkSize, (index + 1) * chunkSize).trim())
+        .filter(Boolean);
+    }
+  }
+  return VIDEO_SCENE_TIMES.map((_, index) => {
+    const position = Math.min(
+      sentences.length - 1,
+      Math.floor((index * sentences.length) / VIDEO_SCENE_TIMES.length)
+    );
+    return (sentences[position] || normalized).slice(0, 500);
+  });
+}
+
 function requiredArray(value, maxLength, minLength = 1) {
   if (!Array.isArray(value) || value.length < minLength) invalidModelResult();
   return value.slice(0, maxLength);
@@ -542,15 +590,14 @@ async function requestOpenRouter(prompt, _host, model, timeoutMs) {
     throw new AppError(503, 'FREE_MODEL_UNAVAILABLE', 'The free model is unavailable.', true);
   });
   if (!response.ok) {
-    await cancelResponseBody(response);
-    if (response.status === 401 || response.status === 403) {
-      throw new AppError(503, 'CONFIGURATION_ERROR', 'Free AI generation credentials are invalid.');
+    let payload = null;
+    try {
+      const responseText = await readBoundedResponseText(response, 65536);
+      payload = responseText ? JSON.parse(responseText) : null;
+    } catch {
+      // The HTTP status still provides a reliable fallback classification.
     }
-    const code = response.status === 429 ? 'FREE_MODEL_QUOTA' : 'FREE_MODEL_UNAVAILABLE';
-    const message = response.status === 429
-      ? 'The free model quota is currently exhausted. Try again later.'
-      : 'No approved free model is currently available.';
-    throw new AppError(response.status === 429 ? 429 : 503, code, message, true);
+    throw classifyOpenRouterFailure(response.status, payload);
   }
   let data;
   try {
@@ -564,15 +611,43 @@ async function requestOpenRouter(prompt, _host, model, timeoutMs) {
     );
   }
   if (data?.error) {
-    const quota = Number(data.error.code) === 429;
-    throw new AppError(
-      quota ? 429 : 503,
-      quota ? 'FREE_MODEL_QUOTA' : 'FREE_MODEL_UNAVAILABLE',
-      quota ? 'Free model capacity is full.' : 'Free model is unavailable.',
+    throw classifyOpenRouterFailure(200, data);
+  }
+  return parseStrictJson(extractModelContent(data));
+}
+
+export function classifyOpenRouterFailure(status, payload = null) {
+  if (status === 401 || status === 403) {
+    return new AppError(503, 'CONFIGURATION_ERROR', 'Free AI generation credentials are invalid.');
+  }
+  const details = [
+    payload?.error?.code,
+    payload?.error?.message,
+    payload?.error?.metadata?.raw,
+    payload?.code,
+    payload?.message
+  ]
+    .filter((value) => typeof value === 'string' || typeof value === 'number')
+    .join(' ')
+    .toLowerCase();
+  const quota = status === 402
+    || status === 429
+    || /(^|\D)(402|429)(\D|$)/.test(details)
+    || /(rate[\s_-]*limit|quota|capacity|insufficient[\s_-]*(credit|fund)|free[\s_-]*(tier|limit))/.test(details);
+  if (quota) {
+    return new AppError(
+      429,
+      'FREE_MODEL_QUOTA',
+      'The free model quota is currently exhausted. Try again later.',
       true
     );
   }
-  return parseStrictJson(extractModelContent(data));
+  return new AppError(
+    503,
+    'FREE_MODEL_UNAVAILABLE',
+    'No approved free model is currently available.',
+    true
+  );
 }
 
 function enforceRateLimit(result) {

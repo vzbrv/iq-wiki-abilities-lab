@@ -73,16 +73,18 @@ test("minor edits accumulate against the last material revision", async () => {
   assert.equal(material.asset, null);
 });
 
-test("title and factual value changes are material", () => {
+test("title changes are material but fact metadata follows the 20 percent threshold", () => {
   const previous = snapshot({ facts: ["15", "0xabc"] });
   assert.equal(
     classifyArticleChange(previous, snapshot({ exactHash: "b", normalizedTitle: "renamed" })).reason,
     "title_changed",
   );
-  assert.equal(
-    classifyArticleChange(previous, snapshot({ exactHash: "c", facts: ["20", "0xabc"] })).reason,
-    "facts_changed",
+  const factEdit = classifyArticleChange(
+    previous,
+    snapshot({ exactHash: "c", facts: ["20", "0xabc"] }),
   );
+  assert.equal(factEdit.material, false);
+  assert.equal(factEdit.reason, "minor_edit");
 });
 
 test("malformed article payload returns a client error", () => {

@@ -215,19 +215,13 @@ function resetVideoPlayer() {
 function renderStoredVideo(video) {
   const asset = video.asset;
   resetVideoPlayer();
-  videoPlayer.src = asset.playbackUrl;
-  if (asset.posterUrl) {
-    videoPlayer.poster = asset.posterUrl;
-  } else {
-    videoPlayer.removeAttribute('poster');
-  }
   document.querySelector('#videoTitle').textContent = video.article?.title || 'IQ.wiki explainer';
   document.querySelector('#videoArticleLink').href = video.article?.url || form.wikiUrl.value;
   document.querySelector('#videoProvider').textContent = [asset.provider, asset.model].filter(Boolean).join(' · ') || 'AI-generated video';
   videoResult.hidden = true;
   return new Promise((resolve) => {
-    const timeout = setTimeout(() => finish(false), 8000);
     let settled = false;
+    let timeout;
     const finish = (ready) => {
       if (settled) return;
       settled = true;
@@ -252,7 +246,15 @@ function renderStoredVideo(video) {
     const handleError = () => finish(false);
     videoPlayer.addEventListener('loadedmetadata', handleReady, { once: true });
     videoPlayer.addEventListener('error', handleError, { once: true });
+    timeout = setTimeout(() => finish(false), 8000);
+    if (asset.posterUrl) {
+      videoPlayer.poster = asset.posterUrl;
+    } else {
+      videoPlayer.removeAttribute('poster');
+    }
+    videoPlayer.src = asset.playbackUrl;
     videoPlayer.load();
+    if (videoPlayer.readyState >= 1) queueMicrotask(handleReady);
   });
 }
 

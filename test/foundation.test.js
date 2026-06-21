@@ -22,6 +22,7 @@ import {
   buildPrompt,
   buildOpenRouterPayload,
   callOpenRouter,
+  classifyOpenRouterFailure,
   getConfiguredModels,
   loadWiki,
   readResponseText,
@@ -200,7 +201,7 @@ test('keeps built-in free fallbacks when models are configured', () => {
     OPENROUTER_MODELS: 'meta-llama/custom-model:free'
   });
   assert.equal(models[0], 'meta-llama/custom-model:free');
-  assert.equal(models.at(-1), 'openrouter/free');
+  assert.equal(models[1], 'openrouter/free');
   assert.ok(models.includes('meta-llama/custom-model:free'));
   assert.ok(models.includes('openai/gpt-oss-20b:free'));
   assert.equal(models.every((model) => model === 'openrouter/free' || model.endsWith(':free')), true);
@@ -408,6 +409,76 @@ test('validates complete grounded video plans', () => {
     }),
     (error) => error.code === 'INVALID_MODEL_RESPONSE'
   );
+});
+
+test('recovers safe video-plan aliases from grounded article text', () => {
+  const plan = validateGeneratedResult('video_scenario', {
+    hook: 'A clear hook',
+    narration: 'A concise narration that explains the article across all three planned scenes.',
+    scenes: [
+      'Show the topic in a cinematic opening shot',
+      { description: 'Show the mechanism working clearly' },
+      { visual: 'Show the practical result for the viewer' }
+    ]
+  }, {
+    rawText: [
+      'The protocol launched to make digital transactions faster for its users.',
+      'It groups related operations before confirming them on the network.',
+      'The article says this design can reduce waiting time for participants.'
+    ].join(' ')
+  });
+
+  assert.equal(plan.scenes[0].visual, 'Show the topic in a cinematic opening shot');
+  assert.match(plan.scenes[0].source_fact, /protocol launched/);
+  assert.ok(plan.scenes.every((scene) => scene.source_fact));
+});
+
+test('creates distinct grounding facts from punctuation-free article text', () => {
+  const rawText = Array.from(
+    { length: 90 },
+    (_, index) => `articleword${index + 1}`
+  ).join(' ');
+  const plan = validateGeneratedResult('video_scenario', {
+    hook: 'A clear hook',
+    narration: 'A concise narration that explains the article across all three planned scenes.',
+    scenes: [
+      'Show the topic in a cinematic opening shot',
+      'Show how the topic works',
+      'Show the practical result'
+    ]
+  }, { rawText });
+
+  assert.equal(new Set(plan.scenes.map((scene) => scene.source_fact)).size, 3);
+  assert.match(plan.scenes[0].source_fact, /articleword1\b/);
+  assert.match(plan.scenes[2].source_fact, /articleword61\b/);
+});
+
+test('creates grounding facts from article text containing one long token', () => {
+  const plan = validateGeneratedResult('video_scenario', {
+    hook: 'A clear hook',
+    narration: 'A concise narration grounded in the supplied article across all three planned scenes.',
+    scenes: [
+      'Show the topic in a cinematic opening shot',
+      'Show how the topic works',
+      'Show the practical result'
+    ]
+  }, { rawText: 'a'.repeat(240) });
+
+  assert.equal(plan.scenes.length, 3);
+  assert.ok(plan.scenes.every((scene) => scene.source_fact.length > 0));
+});
+
+test('classifies OpenRouter quota and configuration failures accurately', () => {
+  assert.equal(classifyOpenRouterFailure(402).code, 'FREE_MODEL_QUOTA');
+  assert.equal(classifyOpenRouterFailure(429).status, 429);
+  assert.equal(
+    classifyOpenRouterFailure(200, {
+      error: { code: 'insufficient_credits', message: 'Free model capacity reached' }
+    }).code,
+    'FREE_MODEL_QUOTA'
+  );
+  assert.equal(classifyOpenRouterFailure(401).code, 'CONFIGURATION_ERROR');
+  assert.equal(classifyOpenRouterFailure(500).code, 'FREE_MODEL_UNAVAILABLE');
 });
 
 function countPlanWords(plan) {
